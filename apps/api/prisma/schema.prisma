@@ -1,0 +1,140 @@
+// Cleaning marketplace — data model
+//
+// Epic 1: Auth, Roles & KYC Verification Infrastructure.
+// Identity is owned by Supabase Auth (`auth.users`). This schema mirrors the
+// Supabase user id as `User.id` so a validated JWT `sub` maps straight onto a
+// local row without a join table.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Platform-wide role. Drives RBAC guards on every protected route.
+enum UserRole {
+  CUSTOMER
+  CLEANER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+/// Lifecycle of a cleaner's identity verification.
+enum KycStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+/// Documents a cleaner must supply before they can be matched to jobs.
+enum KycDocumentType {
+  ID_FRONT
+  ID_BACK
+  SELFIE
+  PROOF_OF_ADDRESS
+  RIGHT_TO_WORK
+  DBS_CERTIFICATE
+  INSURANCE_CERTIFICATE
+}
+
+enum KycDocumentStatus {
+  PENDING_UPLOAD
+  UPLOADED
+  VERIFIED
+  REJECTED
+}
+
+model User {
+  /// Mirrors `auth.users.id` from Supabase. Never generated locally.
+  id        String     @id @db.Uuid
+  email     String     @unique
+  phone     String?
+  fullName  String?
+  role      UserRole   @default(CUSTOMER)
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  cleanerProfile   CleanerProfile?
+  kycDocuments     KycDocument[]
+  reviewedDocuments KycDocument[]  @relation("KycDocumentReviewer")
+  auditLogs        AuditLog[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model CleanerProfile {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bio        String?
+  hourlyRate Decimal? @db.Decimal(10, 2)
+
+  kycStatus          KycStatus @default(NOT_STARTED)
+  kycSubmittedAt     DateTime?
+  kycReviewedAt      DateTime?
+  kycRejectionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kycStatus])
+  @@map("cleaner_profiles")
+}
+
+/// One uploaded KYC file. The file itself lives in a private S3 bucket; only
+/// the object key is persisted, and it is never returned to clients directly —
+/// access is always brokered through a short-lived presigned URL.
+model KycDocument {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type        KycDocumentType
+  status      KycDocumentStatus @default(PENDING_UPLOAD)
+  storageKey  String            @unique
+  contentType String
+  fileSize    Int?
+  checksum    String?
+
+  uploadedAt      DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?  @db.Uuid
+  reviewedBy      User?    @relation("KycDocumentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  rejectionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, type])
+  @@index([status])
+  @@map("kyc_documents")
+}
+
+/// Append-only trail for verification decisions. KYC review is a regulated
+/// action, so every approve/reject is recorded with its actor.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
