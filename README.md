@@ -21,11 +21,14 @@ npm run start:dev
 ## Checks
 
 ```bash
-npm run typecheck
 npm run lint
+npm run typecheck
 npm test
 npm run build
 ```
+
+CI runs these on every pull request, along with `prisma validate`
+(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ## Uploading a KYC document
 
