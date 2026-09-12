@@ -101,8 +101,24 @@ describe('S3StorageService', () => {
       contentLength: 10,
     });
 
-    expect(signedUrlMock.mock.calls[0][2]).toEqual({ expiresIn: 60 });
+    expect(signedUrlMock.mock.calls[0][2]).toMatchObject({ expiresIn: 60 });
     expect(upload.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 60_000);
+  });
+
+  // Setting ContentType/ContentLength on the command is not enough: unless the
+  // headers are declared signable they stay out of X-Amz-SignedHeaders, and S3
+  // then accepts any body of any type under the URL.
+  it('declares content-type and content-length as signable headers', async () => {
+    const service = build();
+
+    await service.createPresignedUpload({
+      key: 'kyc/user/id_front/file.jpg',
+      contentType: 'image/jpeg',
+      contentLength: 2048,
+    });
+
+    const options = signedUrlMock.mock.calls[0][2] as { signableHeaders?: Set<string> };
+    expect(options.signableHeaders).toEqual(new Set(['content-type', 'content-length']));
   });
 
   it('sanitises the filename used in the download disposition header', async () => {

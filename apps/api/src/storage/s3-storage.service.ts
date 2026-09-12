@@ -72,7 +72,13 @@ export class S3StorageService implements OnModuleDestroy {
       ...encryption,
     });
 
-    const url = await getSignedUrl(this.client, command, { expiresIn: ttl });
+    const url = await getSignedUrl(this.client, command, {
+      expiresIn: ttl,
+      // Without this the SDK signs neither header, and S3 then accepts any
+      // body of any type under this URL. `x-amz-*` values are carried in the
+      // query string and covered by the signature already.
+      signableHeaders: new Set(['content-type', 'content-length']),
+    });
 
     const requiredHeaders: Record<string, string> = {
       'Content-Type': request.contentType,
