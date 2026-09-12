@@ -3,9 +3,14 @@
 Marketplace API for a cleaning service. See [`docs/architecture.md`](docs/architecture.md)
 for the design.
 
-**Epic 1 — Auth, Roles & KYC Verification Infrastructure** is scaffolded:
-Supabase JWT validation, `UserRole` RBAC guards, and S3 presigned URLs for KYC
-documents.
+**Epic 1 — Auth, Roles & KYC Verification Infrastructure**: Supabase JWT
+validation, `UserRole` RBAC guards, and S3 presigned URLs for KYC documents.
+
+**Epic 2 — Bookings & Scheduling**: service catalogue and quoting, customer
+addresses, cleaner availability with time-zone-correct slot generation, and the
+booking lifecycle. Only KYC-approved cleaners are bookable, and overlapping
+confirmed bookings are prevented by a database constraint rather than an
+application check.
 
 ## Getting started
 
@@ -14,7 +19,7 @@ cd apps/api
 npm install
 cp .env.example .env      # then fill in Supabase and AWS values
 npx prisma generate
-npx prisma migrate dev    # requires a reachable PostgreSQL instance
+npx prisma migrate deploy  # requires a reachable PostgreSQL instance
 npm run start:dev
 ```
 
@@ -51,3 +56,23 @@ curl -X POST http://localhost:3000/api/v1/kyc/documents/$DOCUMENT_ID/confirm \
 
 Once every required document is uploaded the cleaner moves to `IN_REVIEW`, and an
 admin approves or rejects via `PATCH /api/v1/kyc/reviews/:userId`.
+
+## Booking a clean
+
+```bash
+# 1. Find bookable slots (empty unless the cleaner is KYC-approved)
+curl "http://localhost:3000/api/v1/cleaners/$CLEANER_ID/slots?date=2026-10-05&durationMinutes=120" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 2. Request one
+curl -X POST http://localhost:3000/api/v1/bookings \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"cleanerId":"...","serviceId":"...","addressId":"...","scheduledStart":"2026-10-05T09:00:00Z","durationMinutes":120}'
+
+# 3. The cleaner accepts, then starts, then completes
+curl -X PATCH http://localhost:3000/api/v1/bookings/$BOOKING_ID/accept \
+  -H "Authorization: Bearer $CLEANER_TOKEN"
+```
+
+A request does not reserve the slot — several customers may request the same
+time, and whoever the cleaner accepts first gets it.
