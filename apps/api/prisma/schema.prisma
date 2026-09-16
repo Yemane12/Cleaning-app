@@ -69,6 +69,10 @@ model User {
   kycDocuments     KycDocument[]
   reviewedDocuments KycDocument[]  @relation("KycDocumentReviewer")
   auditLogs        AuditLog[]
+  addresses        Address[]
+  bookingsAsCustomer Booking[]     @relation("CustomerBookings")
+  bookingsAsCleaner  Booking[]     @relation("CleanerBookings")
+  bookingEvents      BookingEvent[]
 
   @@index([role])
   @@map("users")
@@ -82,6 +86,10 @@ model CleanerProfile {
   bio        String?
   hourlyRate Decimal? @db.Decimal(10, 2)
 
+  /// IANA zone the cleaner's availability windows are expressed in.
+  /// Stored per cleaner so a London rule of 09:00 stays 09:00 across a DST shift.
+  timeZone String @default("Europe/London")
+
   kycStatus          KycStatus @default(NOT_STARTED)
   kycSubmittedAt     DateTime?
   kycReviewedAt      DateTime?
@@ -89,6 +97,9 @@ model CleanerProfile {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  availabilityRules      AvailabilityRule[]
+  availabilityExceptions AvailabilityException[]
 
   @@index([kycStatus])
   @@map("cleaner_profiles")
@@ -137,4 +148,179 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Epic 2: Bookings & Scheduling
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ServiceCategory {
+  STANDARD_CLEAN
+  DEEP_CLEAN
+  END_OF_TENANCY
+  OFFICE_CLEAN
+  CARPET_CLEAN
+}
+
+/// A bookable service. Prices are integer minor units (pence) — money is never
+/// stored as a float, and never as a Decimal we would then do JS arithmetic on.
+model Service {
+  id          String          @id @default(uuid()) @db.Uuid
+  slug        String          @unique
+  name        String
+  description String?
+  category    ServiceCategory
+
+  /// Starting duration for a quote; a customer may book longer.
+  baseDurationMinutes   Int
+  basePriceMinor        Int
+  /// Added for each 30 minutes beyond baseDurationMinutes.
+  pricePerHalfHourMinor Int
+  currency              String @default("GBP")
+
+  /// Retired services stay readable so historic bookings still resolve.
+  active Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  bookings  Booking[]
+
+  @@index([active, category])
+  @@map("services")
+}
+
+/// Where a clean happens. Owned by the customer, snapshotted onto the booking
+/// by reference so edits to an address never rewrite a past booking's location.
+model Address {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label     String?
+  line1     String
+  line2     String?
+  city      String
+  postcode  String
+  country   String  @default("GB")
+  notes     String?
+  isDefault Boolean @default(false)
+
+  /// Soft delete: an address referenced by a booking must not vanish.
+  archivedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  bookings  Booking[]
+
+  @@index([userId, archivedAt])
+  @@map("addresses")
+}
+
+/// A recurring weekly window, in the cleaner's own time zone.
+model AvailabilityRule {
+  id               String         @id @default(uuid()) @db.Uuid
+  cleanerProfileId String         @db.Uuid
+  cleanerProfile   CleanerProfile @relation(fields: [cleanerProfileId], references: [id], onDelete: Cascade)
+
+  /// 0 = Sunday … 6 = Saturday, evaluated in CleanerProfile.timeZone.
+  weekday Int
+  /// Minutes from local midnight: 540 = 09:00, 1020 = 17:00.
+  startMinute Int
+  endMinute   Int
+
+  createdAt DateTime @default(now())
+
+  @@unique([cleanerProfileId, weekday, startMinute, endMinute])
+  @@index([cleanerProfileId, weekday])
+  @@map("availability_rules")
+}
+
+/// A one-off block of unavailability (holiday, appointment) that overrides the
+/// recurring rules. Absolute instants, so it is unambiguous across zones.
+model AvailabilityException {
+  id               String         @id @default(uuid()) @db.Uuid
+  cleanerProfileId String         @db.Uuid
+  cleanerProfile   CleanerProfile @relation(fields: [cleanerProfileId], references: [id], onDelete: Cascade)
+
+  startsAt DateTime @db.Timestamptz(3)
+  endsAt   DateTime @db.Timestamptz(3)
+  reason   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([cleanerProfileId, startsAt, endsAt])
+  @@map("availability_exceptions")
+}
+
+enum BookingStatus {
+  REQUESTED
+  ACCEPTED
+  DECLINED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED_BY_CUSTOMER
+  CANCELLED_BY_CLEANER
+}
+
+model Booking {
+  id        String @id @default(uuid()) @db.Uuid
+  /// Short human-quotable id for support ("BK-7Q2ZK4").
+  reference String @unique
+
+  customerId String @db.Uuid
+  customer   User   @relation("CustomerBookings", fields: [customerId], references: [id])
+  cleanerId  String @db.Uuid
+  cleaner    User   @relation("CleanerBookings", fields: [cleanerId], references: [id])
+
+  serviceId String  @db.Uuid
+  service   Service @relation(fields: [serviceId], references: [id])
+  addressId String  @db.Uuid
+  address   Address @relation(fields: [addressId], references: [id])
+
+  status BookingStatus @default(REQUESTED)
+
+  scheduledStart  DateTime @db.Timestamptz(3)
+  scheduledEnd    DateTime @db.Timestamptz(3)
+  durationMinutes Int
+
+  /// Snapshot of the quote at booking time, so a later price change to the
+  /// service never silently repricizes work already agreed.
+  quotedPriceMinor Int
+  currency         String
+
+  customerNotes String?
+
+  acceptedAt         DateTime?
+  declinedAt         DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  cancelledAt        DateTime?
+  cancellationReason String?
+
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  events    BookingEvent[]
+
+  @@index([cleanerId, scheduledStart])
+  @@index([customerId, scheduledStart])
+  @@index([status, scheduledStart])
+  @@map("bookings")
+}
+
+/// Append-only transition log. Every status change records who caused it.
+model BookingEvent {
+  id        String  @id @default(uuid()) @db.Uuid
+  bookingId String  @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  fromStatus BookingStatus?
+  toStatus   BookingStatus
+  actorId    String?        @db.Uuid
+  actor      User?          @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  reason     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([bookingId, createdAt])
+  @@map("booking_events")
 }
