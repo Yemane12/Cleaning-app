@@ -76,3 +76,43 @@ curl -X PATCH http://localhost:3000/api/v1/bookings/$BOOKING_ID/accept \
 
 A request does not reserve the slot — several customers may request the same
 time, and whoever the cleaner accepts first gets it.
+
+## Deploying to Vercel
+
+The API runs on Vercel as a Node serverless function (`apps/api/api/index.js`),
+not as `nest start`'s persistent server — a container-based host (Railway,
+Render, Fly, ECS) would just run `npm run start:prod` unmodified instead. See
+[`docs/architecture.md`](docs/architecture.md#deploying-to-vercel) for what the
+serverless adaptation actually changes and why.
+
+1. **Create the Vercel project** with Root Directory set to `apps/api` — this
+   repo is a monorepo and Vercel does not infer that on its own.
+2. **Set environment variables** in the Vercel project settings, for both
+   Production and Preview: everything in `apps/api/.env.example`, with real
+   values. In particular:
+   - `DATABASE_URL` — Supabase's **pooled** connection string (port 6543),
+     with `?pgbouncer=true&connection_limit=1`.
+   - `DIRECT_URL` — Supabase's **direct** connection string (port 5432).
+   - `CORS_ORIGINS` — your frontend's deployed URL(s), comma-separated.
+   - Preview deployments run on every PR. If `DATABASE_URL` there points at
+     the same Supabase project as production, every PR gets a live function
+     writing to production data — either point Preview at a separate
+     Supabase project, or set the variable for Production only and accept
+     that Preview deployments will 500 on any route that touches the
+     database.
+3. **Apply migrations before the first deploy**, and again after any schema
+   change — Vercel's build does not run `prisma migrate deploy` for you (see
+   the architecture doc for why that is deliberate):
+   ```bash
+   DATABASE_URL=$DIRECT_URL npx prisma migrate deploy
+   ```
+4. **Deploy.** Vercel runs `npm run vercel-build` (`prisma generate && nest build`),
+   then serves every path through the one function per `vercel.json`'s rewrite
+   rule.
+5. **Verify**, the same way this was verified in development — a 200 from
+   `/health` only proves the process booted, not that auth works:
+   ```bash
+   curl https://your-app.vercel.app/api/v1/health
+   curl -i https://your-app.vercel.app/api/v1/auth/me \
+     -H "Authorization: Bearer $REAL_SUPABASE_ACCESS_TOKEN"
+   ```
