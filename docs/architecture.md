@@ -26,6 +26,7 @@ downstream of identity — roles, profiles, verification state, bookings.
 
 ```
 apps/api/            NestJS service
+  api/index.js       Vercel serverless function entry (plain JS — see below)
   prisma/
     schema.prisma
     migrations/      Versioned SQL, including the no-overlap constraint
@@ -40,6 +41,10 @@ apps/api/            NestJS service
     prisma/          Database client provider
     config/          Environment schema and typed accessors
     common/          Shared DTOs and time-zone helpers
+    bootstrap.ts     Config shared by both entry points below
+    main.ts          Persistent-server entry point (local dev, non-Vercel hosts)
+    serverless.ts    Vercel entry point
+  vercel.json
 docs/                This document
 ```
 
@@ -239,6 +244,80 @@ Status updates are compare-and-set (`where: { id, status }`) and write the
 booking and its `BookingEvent` in one transaction, so the audit trail cannot
 diverge from the booking.
 
+## Deploying to Vercel
+
+Vercel runs Node serverless functions — short-lived, individually invoked,
+with no guarantee that two consecutive requests hit the same process. That is
+a different shape from `nest start`'s persistent server, and it changes three
+things in ways worth making explicit rather than discovering in a production
+incident.
+
+**Two entry points, one shared config.** `src/main.ts` (persistent server,
+binds a port, installs a graceful-shutdown hook) and `src/serverless.ts`
+(Vercel, no port, no shutdown hook — a frozen container doesn't receive
+SIGTERM the way a persistent process does) both call the same
+`configureApp()` in `src/bootstrap.ts` for the global prefix, validation pipe
+and CORS. Duplicating that setup across the two would let them drift —
+a pipe added to one and not the other is exactly the kind of gap that stays
+invisible until whichever path didn't get it is the one in production.
+
+`serverless.ts` caches the built Express app across invocations
+(`api/index.js` → `getServer()`), because without caching every invocation
+would call `NestFactory.create` again and open a fresh set of Prisma
+connections — which is precisely the problem the connection pooler below
+exists to avoid. A failed cold start clears the cache rather than pinning a
+container to a permanent rejection, so a transient failure gets retried on
+the next invocation instead of wedging that container for its whole
+lifetime.
+
+**Connection pooling is not optional.** Many short-lived function instances
+each opening a Postgres connection exhausts Supabase's connection limit in
+minutes. `DATABASE_URL` points at Supabase's pooled connection (Supavisor,
+port 6543) for everything the running app does; `DIRECT_URL` is the unpooled
+connection (port 5432) that only `prisma migrate` uses, since a
+transaction-mode pooler doesn't support the session-level features
+migrations need. This is a Prisma `datasource` block feature
+(`url` / `directUrl`), not application code.
+
+**Migrations do not run in the Vercel build**, on purpose. Vercel builds
+Preview deployments for every PR; if the build command ran
+`prisma migrate deploy` against a shared `DATABASE_URL`, every PR would apply
+schema changes to whatever database that URL points at. Deploying and
+migrating are kept as separate, deliberate steps — see the README's
+[deploy checklist](../README.md#deploying-to-vercel).
+
+**The query engine binary has to match the runtime it will actually run on.**
+`prisma generate`, run locally or in CI on a Debian-based image, produces a
+binary for that platform. Vercel's Node functions run on a different Linux
+distribution. `binaryTargets = ["native", "rhel-openssl-3.0.x"]` in the
+generator block asks Prisma to build both, so the client generated in CI
+(Debian, for local dev and tests) and the one Vercel's own build produces
+from the same `prisma generate` call both work. Get this wrong and the
+failure is specific to production: everything passes locally and in CI, and
+the first request in production throws "query engine not found for this
+platform" — the same shape of bug as the presigned-URL signature gap in
+Epic 1's PR, just one layer further down the stack. If a future Vercel
+runtime change moves the target, the fix is to add whatever platform string
+the failing build's own error names.
+
+**CORS is closed by default.** `CORS_ORIGINS` (comma-separated) is empty
+unless set. Every route but `/health` takes a bearer token, so defaulting to
+`*` would be a wider grant than the API needs — a deployed frontend gets CORS
+errors from a browser until its origin is added, which is the intended
+failure mode (loud and immediate) rather than a silent overly-permissive
+default.
+
+**Proven, not just configured.** `src/serverless.spec.ts` is the one spec in
+this codebase that does not mock `PrismaService` — `getServer()` calls
+`NestFactory.create` directly, with no testing-module override hook, so
+mocking Prisma here would mean the test could never catch a real connection
+problem. It runs the actual compiled `dist/serverless.js` against a real
+database, in CI via a Postgres service container. Separately from that test,
+before this was written, the exact file Vercel invokes (`api/index.js`) was
+driven through a real HTTP socket from a clean `npm run vercel-build`,
+confirming the require path resolves and the response comes back 200 —
+not merely that the TypeScript compiles.
+
 ## Cross-cutting decisions
 
 - **Configuration is validated on boot** by a Zod schema (`config/env.validation.ts`).
@@ -267,3 +346,9 @@ Deliberately out of scope so far, and the most likely next steps:
 - **Rate limiting** on presigned-URL issuance.
 - **Notifications** — no one is told when KYC is decided or a booking changes
   state.
+- **The exclusion constraint has CI's database available to it now** (added
+  alongside the Vercel work, for `serverless.spec.ts`) **but no test yet
+  exercises it.** Deleting `20260912180149_booking_no_overlap`'s SQL would
+  still pass all 128 tests. Closing this is now a small addition — insert two
+  overlapping `ACCEPTED` bookings directly and assert the second throws —
+  rather than the CI infrastructure change it would have been before.

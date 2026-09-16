@@ -7,11 +7,24 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Vercel's Node serverless functions run on an Amazon-Linux runtime, not
+  // the Debian image this is normally generated on. Without this target the
+  // client works locally and then fails at cold start in production with a
+  // "query engine not found for this platform" error. If a Vercel build ever
+  // reports a different missing target, add that exact string here.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Serverless: many short-lived function instances, each wanting its own
+  // Postgres connection — enough of them exhaust Supabase's connection limit
+  // in minutes. `DATABASE_URL` points at Supabase's pooled connection
+  // (Supavisor/PgBouncer, port 6543) for the app itself; `directUrl` is the
+  // unpooled connection (port 5432) that `prisma migrate` needs, since a
+  // transaction-mode pooler cannot run migrations. See .env.example.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 /// Platform-wide role. Drives RBAC guards on every protected route.

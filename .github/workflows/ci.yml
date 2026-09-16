@@ -21,6 +21,31 @@ jobs:
       run:
         working-directory: apps/api
 
+    # A real database, not a placeholder URL: the exclusion constraint that
+    # prevents double-booking and the serverless entry point's Prisma
+    # connection are both things a mocked/never-connected Prisma client
+    # cannot verify — the same lesson the presigned-URL bug taught for S3.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # No pooler in CI, so both point at the same instance — that
+      # distinction only matters against Supabase's pooled connection.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/ci
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,11 +63,10 @@ jobs:
         run: npx prisma generate
 
       - name: Validate Prisma schema
-        # Schema validation parses the datasource block, so the URL must be
-        # present. Nothing connects to it — this is a placeholder, not a secret.
-        env:
-          DATABASE_URL: postgresql://user:pass@localhost:5432/ci
         run: npx prisma validate
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
 
       - name: Lint
         run: npm run lint

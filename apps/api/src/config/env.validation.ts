@@ -44,6 +44,25 @@ export const envSchema = z
       .int()
       .positive()
       .default(10 * 1024 * 1024),
+
+    /**
+     * Comma-separated browser origins allowed to call this API cross-origin,
+     * e.g. "https://app.example.com,https://staging.example.com". Empty by
+     * default, which means CORS stays off and only same-origin or non-browser
+     * callers (curl, a server-to-server call) can reach the API — deliberately
+     * closed rather than defaulting to "*", since routes take a bearer token.
+     * A deployed frontend will get CORS errors until this is set.
+     */
+    CORS_ORIGINS: z
+      .string()
+      .optional()
+      .default('')
+      .transform((value) =>
+        value
+          .split(',')
+          .map((origin) => origin.trim())
+          .filter(Boolean),
+      ),
   })
   .superRefine((env, ctx) => {
     if (!env.SUPABASE_JWT_SECRET && !env.SUPABASE_URL) {
