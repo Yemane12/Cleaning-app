@@ -281,6 +281,15 @@ export class ChapaClient {
   }
 }
 
+/**
+ * Whether Chapa has given up on a charge or transfer. Besides "failed" and
+ * "cancelled", Chapa reports the combined "failed/cancelled".
+ */
+export function isFailedStatus(status: string): boolean {
+  const parts = status.toLowerCase().split('/');
+  return parts.every((part) => ['failed', 'cancelled', 'canceled'].includes(part.trim()));
+}
+
 /** 12345 santim → "123.45" birr, without floating point. */
 export function toChapaAmount(amountMinor: number): string {
   if (!Number.isInteger(amountMinor) || amountMinor < 0) {

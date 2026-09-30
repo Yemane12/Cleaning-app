@@ -89,7 +89,7 @@ describe('PaymentsService', () => {
       booking: {
         findUniqueOrThrow: jest
           .fn()
-          .mockResolvedValue({ reference: 'BK-1', cleanerId: 'cleaner-1' }),
+          .mockResolvedValue({ reference: 'BK-7Q2ZK4', cleanerId: 'cleaner-1' }),
       },
       cleanerProfile: {
         findUnique: jest.fn().mockResolvedValue({
@@ -192,6 +192,13 @@ describe('PaymentsService', () => {
         failureMessage: 'Payment failed at Chapa',
       });
     });
+
+    // What Chapa's verify actually answered for a declined test payment.
+    it('recognises the combined "failed/cancelled" status', () => {
+      expect(reconcile(payment(), { ...paid(), status: 'failed/cancelled' })).toEqual({
+        failureMessage: 'Payment failed/cancelled at Chapa',
+      });
+    });
   });
 
   describe('sendRefund', () => {
@@ -275,7 +282,7 @@ describe('PaymentsService', () => {
       const result = await service.payOut('pay-1');
 
       expect(chapa.transfer).toHaveBeenCalledWith({
-        reference: 'po-pay-1-1',
+        reference: 'po-BK-7Q2ZK4-1',
         amountMinor: 340_000,
         currency: 'ETB',
         bankCode: 855,
@@ -285,15 +292,25 @@ describe('PaymentsService', () => {
       expect(result).toEqual(
         expect.objectContaining({
           payoutStatus: PayoutStatus.SENT,
-          payoutReference: 'po-pay-1-1',
+          payoutReference: 'po-BK-7Q2ZK4-1',
           payoutAttempts: 1,
         }),
       );
     });
 
+    // Chapa refuses longer references outright; a payment UUID alone is 36.
+    it("keeps the reference within Chapa's 36 characters", async () => {
+      const id = 'e65c06d1-2a6e-4924-a8ad-c8ffa7e1eeb9';
+      stored = { ...stored, id };
+
+      await service.payOut(id);
+
+      expect(stored.payoutReference!.length).toBeLessThanOrEqual(36);
+    });
+
     it('writes the reference before asking Chapa', async () => {
       chapa.transfer.mockImplementation(() => {
-        expect(stored.payoutReference).toBe('po-pay-1-1');
+        expect(stored.payoutReference).toBe('po-BK-7Q2ZK4-1');
         return Promise.resolve();
       });
 
@@ -304,10 +321,10 @@ describe('PaymentsService', () => {
       stored = {
         ...stored,
         payoutStatus: PayoutStatus.SENT,
-        payoutReference: 'po-pay-1-1',
+        payoutReference: 'po-BK-7Q2ZK4-1',
         payoutAttempts: 1,
       };
-      chapa.verifyTransfer.mockResolvedValue({ status: 'success', reference: 'po-pay-1-1' });
+      chapa.verifyTransfer.mockResolvedValue({ status: 'success', reference: 'po-BK-7Q2ZK4-1' });
 
       const result = await service.payOut('pay-1');
 
@@ -319,21 +336,64 @@ describe('PaymentsService', () => {
       stored = {
         ...stored,
         payoutStatus: PayoutStatus.SENT,
-        payoutReference: 'po-pay-1-1',
+        payoutReference: 'po-BK-7Q2ZK4-1',
         payoutAttempts: 1,
       };
-      chapa.verifyTransfer.mockResolvedValue({ status: 'pending', reference: 'po-pay-1-1' });
+      chapa.verifyTransfer.mockResolvedValue({ status: 'pending', reference: 'po-BK-7Q2ZK4-1' });
 
       await service.payOut('pay-1');
 
       expect(chapa.transfer).not.toHaveBeenCalled();
     });
 
+    it('makes a new attempt when Chapa reports the earlier one failed/cancelled', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.SENT,
+        payoutReference: 'po-BK-7Q2ZK4-1',
+        payoutAttempts: 1,
+      };
+      chapa.verifyTransfer.mockResolvedValue({
+        status: 'failed/cancelled',
+        reference: 'po-BK-7Q2ZK4-1',
+      });
+
+      await service.payOut('pay-1');
+
+      expect(chapa.transfer).toHaveBeenCalledWith(
+        expect.objectContaining({ reference: 'po-BK-7Q2ZK4-2' }),
+      );
+    });
+
+    // The live case: a first attempt refused for its over-long reference,
+    // which Chapa then will not look up either. Refused is already certain.
+    it('retries a refused payout even when its old reference cannot be looked up', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.FAILED,
+        payoutReference: 'po-e65c06d1-2a6e-4924-a8ad-c8ffa7e1eeb9-1',
+        payoutAttempts: 1,
+        payoutError: 'The reference field need to be 36 characters or less',
+      };
+      chapa.verifyTransfer.mockRejectedValue(
+        new ChapaError('The reference field need to be 36 characters or less', 422),
+      );
+
+      const result = await service.payOut('pay-1');
+
+      expect(chapa.transfer).toHaveBeenCalledWith(
+        expect.objectContaining({ reference: 'po-BK-7Q2ZK4-2', amountMinor: 340_000 }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ payoutStatus: PayoutStatus.SENT, payoutError: null }),
+      );
+    });
+
     it('makes a new attempt when the earlier one never reached Chapa', async () => {
       stored = {
         ...stored,
         payoutStatus: PayoutStatus.SENT,
-        payoutReference: 'po-pay-1-1',
+        payoutReference: 'po-BK-7Q2ZK4-1',
         payoutAttempts: 1,
       };
       chapa.verifyTransfer.mockResolvedValue(null);
@@ -341,7 +401,7 @@ describe('PaymentsService', () => {
       await service.payOut('pay-1');
 
       expect(chapa.transfer).toHaveBeenCalledWith(
-        expect.objectContaining({ reference: 'po-pay-1-2' }),
+        expect.objectContaining({ reference: 'po-BK-7Q2ZK4-2' }),
       );
     });
 
@@ -349,7 +409,7 @@ describe('PaymentsService', () => {
       stored = {
         ...stored,
         payoutStatus: PayoutStatus.SENT,
-        payoutReference: 'po-pay-1-1',
+        payoutReference: 'po-BK-7Q2ZK4-1',
         payoutAttempts: 1,
       };
       chapa.verifyTransfer.mockRejectedValue(new ChapaError('timeout', 0));
