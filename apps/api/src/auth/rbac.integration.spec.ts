@@ -112,6 +112,28 @@ describe('RBAC (HTTP)', () => {
     await request(app.getHttpServer()).get('/api/v1/health').expect(200);
   });
 
+  // A public handler inside a controller whose baseline is @Roles(CLEANER):
+  // the browser coming back from Stripe carries no token.
+  it("serves Stripe's onboarding return page without authentication", async () => {
+    await as(null, 'get', '/api/v1/payments/connect/return').expect(200);
+  });
+
+  it('keeps everyone but cleaners out of the rest of payout setup', async () => {
+    await as('customer', 'get', '/api/v1/payments/connect/status').expect(403);
+    await as('admin', 'post', '/api/v1/payments/connect/onboarding-link').expect(403);
+  });
+
+  it('only lets a customer register as a cleaner', async () => {
+    await as('cleaner', 'post', '/api/v1/auth/me/become-cleaner').expect(403);
+    await as('admin', 'post', '/api/v1/auth/me/become-cleaner').expect(403);
+  });
+
+  it('reserves payout retries for admins', async () => {
+    const path = '/api/v1/bookings/44444444-0000-4000-8000-000000000004/payout';
+    await as('cleaner', 'post', path).expect(403);
+    await as('customer', 'post', path).expect(403);
+  });
+
   it('lets an admin into the review queue', async () => {
     await as('admin', 'get', '/api/v1/kyc/reviews/pending').expect(200);
   });

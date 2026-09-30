@@ -1,6 +1,17 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, NestApplicationOptions, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Env } from './config/env.validation';
+
+/**
+ * Options for `NestFactory.create`, shared by both entry points for the same
+ * reason as configureApp below.
+ *
+ * `rawBody` keeps the exact request bytes alongside the parsed JSON body.
+ * Stripe signs those bytes; re-serialising the parsed body would change
+ * whitespace and key order and fail every signature check. Only the Stripe
+ * webhook reads it.
+ */
+export const NEST_APP_OPTIONS: NestApplicationOptions = { rawBody: true };
 
 /**
  * App-wide setup shared by every entry point: the local dev server

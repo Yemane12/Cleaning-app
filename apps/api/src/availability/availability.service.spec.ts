@@ -25,6 +25,7 @@ describe('AvailabilityService', () => {
     userId: cleanerUserId,
     timeZone: 'Europe/London',
     kycStatus: KycStatus.APPROVED,
+    payoutsEnabled: true,
     ...overrides,
   });
 
@@ -76,6 +77,19 @@ describe('AvailabilityService', () => {
       prisma.cleanerProfile.findUnique.mockResolvedValue(
         profile({ kycStatus: KycStatus.IN_REVIEW }),
       );
+
+      const slots = await service.getSlots(
+        cleanerUserId,
+        { date: MONDAY, durationMinutes: 60 },
+        NOW,
+      );
+
+      expect(slots).toEqual([]);
+      expect(prisma.availabilityRule.findMany).not.toHaveBeenCalled();
+    });
+
+    it('offers no slots at all for a cleaner who cannot yet be paid', async () => {
+      prisma.cleanerProfile.findUnique.mockResolvedValue(profile({ payoutsEnabled: false }));
 
       const slots = await service.getSlots(
         cleanerUserId,

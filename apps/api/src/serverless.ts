@@ -4,7 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import express, { Express } from 'express';
 import { AppModule } from './app.module';
-import { configureApp } from './bootstrap';
+import { NEST_APP_OPTIONS, configureApp } from './bootstrap';
 
 /**
  * Entry point for Vercel's Node serverless runtime — see api/index.js, the
@@ -43,7 +43,7 @@ export function getServer(): Promise<Express> {
 
 async function createServer(): Promise<Express> {
   const expressApp = express();
-  const app = await NestFactory.create(AppModule, new ExpressAdapter(expressApp));
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(expressApp), NEST_APP_OPTIONS);
 
   configureApp(app);
   await app.init();

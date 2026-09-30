@@ -1,7 +1,7 @@
 # Architecture
 
 > Status: this document was created alongside the Epic 1 scaffold and extended
-> for Epic 2. The repository was empty when the work started, so the decisions
+> for Epics 2 and 3. The repository was empty when the work started, so the decisions
 > below are the ones the code now encodes rather than a pre-existing
 > specification. Revise freely — the code should follow this document, not the
 > other way round.
@@ -9,12 +9,16 @@
 ## Overview
 
 A two-sided marketplace: customers book cleans, cleaners deliver them. Cleaners
-must pass identity verification (KYC) before they can be matched to a job.
+must pass identity verification (KYC) and set up payouts before they can be
+matched to a job; customers pay by card, and cleaners are paid on completion.
 
 ```
 Client apps ──► NestJS API (apps/api) ──► PostgreSQL (Prisma)
-     │                  │
+     │                  │  ▲
+     │                  │  └─────────── Stripe webhooks (payment + payout account events)
+     │                  ├────────────► Stripe (card holds, captures, refunds, Connect payouts)
      │                  └────────────► Supabase Storage (private KYC bucket, S3 API)
+     ├──► Stripe.js (card entry; card details never reach the API)
      └──► Supabase Auth (sign-up, sign-in, token issuance)
 ```
 
@@ -38,6 +42,7 @@ apps/api/            NestJS service
     addresses/       Customer addresses
     availability/    Cleaner working hours, time off, bookable slots
     bookings/        Booking lifecycle and state machine
+    payments/        Stripe: card holds, refunds, payouts, payout accounts, webhook
     prisma/          Database client provider
     config/          Environment schema and typed accessors
     common/          Shared DTOs and time-zone helpers
@@ -173,6 +178,14 @@ regulated decision that is not recorded must not take effect.
 | `GET` | `/api/v1/bookings`, `/api/v1/bookings/:id` | participants |
 | `PATCH` | `/api/v1/bookings/:id/{accept,decline,start,complete}` | assigned `CLEANER` |
 | `PATCH` | `/api/v1/bookings/:id/cancel` | either participant |
+| `GET` | `/api/v1/bookings/:id/payment` | participants (client secret: paying customer only) |
+| `POST` | `/api/v1/bookings/:id/payment/sync` | the booking's `CUSTOMER` |
+| `POST` | `/api/v1/bookings/:id/payout` | `ADMIN` (retry a failed payout) |
+| `POST` | `/api/v1/auth/me/become-cleaner` | `CUSTOMER` |
+| `POST` | `/api/v1/payments/connect/onboarding-link` | `CLEANER` |
+| `GET` | `/api/v1/payments/connect/status` | `CLEANER` |
+| `GET` | `/api/v1/payments/connect/return` | public (Stripe's onboarding return page) |
+| `POST` | `/api/v1/payments/webhook` | public, Stripe-signed |
 
 ## Epic 2 — Bookings & Scheduling
 
@@ -218,6 +231,9 @@ REQUESTED ──accept──▶ ACCEPTED ──start──▶ IN_PROGRESS ──
     └──cancel───▶ CANCELLED_BY_{CUSTOMER,CLEANER} ◀──cancel──┘
 ```
 
+(Epic 3 adds `PENDING_PAYMENT` before `REQUESTED` and an `EXPIRED` end state —
+see [Story 3.2](#story-32--pay-for-a-booking-hold-at-request-charge-on-accept).)
+
 Transitions live as data in `src/bookings/booking-state.ts`, so an illegal move
 cannot be expressed and the diagram above can be checked against the table by
 eye. A customer cannot cancel a clean already under way; the cleaner can, since
@@ -252,6 +268,155 @@ constraint is what makes the guarantee true. Its violation surfaces as a 409.
 Status updates are compare-and-set (`where: { id, status }`) and write the
 booking and its `BookingEvent` in one transaction, so the audit trail cannot
 diverge from the booking.
+
+## Epic 3 — Payments
+
+Stripe processes every card and payout. The API never sees a card number —
+the customer's browser hands the card to Stripe.js directly — nor a cleaner's
+bank details, which Stripe's hosted onboarding collects. What the API holds is
+the *decisions*: how much to take, when, what to give back, what the cleaner
+is owed.
+
+Money is integer minor units everywhere, as in Epic 2, and every split of a
+booking's money is a pure function in `payments/payment-math.ts`. Whatever
+happens, `refund + payout + platform fee = what the customer paid`, checked
+exhaustively across prices and fee settings rather than by example.
+
+### Story 3.1 — Becoming a cleaner, and getting paid
+
+`POST /auth/me/become-cleaner` switches a customer to `CLEANER` and creates the
+profile KYC hangs off — self-service, because it grants no reach on its own.
+It refuses while the customer has bookings in flight, since one account has
+one role and they could no longer act on those as a customer.
+
+Payouts use **Stripe Connect** with Stripe-hosted onboarding and dashboard
+(the "Express" arrangement, expressed as `controller` properties):
+
+1. `POST /payments/connect/onboarding-link` creates the cleaner's payout
+   account on first use and returns a single-use Stripe URL.
+2. Stripe returns the browser to `STRIPE_CONNECT_RETURN_URL`.
+3. That page calls `GET /payments/connect/status`, which reads the account
+   live from Stripe and caches `payoutsEnabled` on the profile. The
+   `account.updated` webhook does the same in the background.
+
+**A cleaner who cannot be paid cannot be booked** — the same gate as KYC,
+applied in the same two places: slot discovery shows nothing, and a direct
+request is refused. "Can be paid" means the transfers capability is active
+*and* payouts are enabled; either alone lets money arrive but not leave, or
+the reverse.
+
+### Story 3.2 — Pay for a booking: hold at request, charge on accept
+
+```
+PENDING_PAYMENT ──card authorised──▶ REQUESTED ──accept──▶ ACCEPTED ──▶ …
+     │                                    │
+     ├── cancel (customer) ──────────────┼──▶ CANCELLED_BY_*
+     └── hold lapsed or voided ──────────┴──▶ EXPIRED
+```
+
+`POST /bookings` opens a **manual-capture PaymentIntent** — a hold on the card,
+not a charge — and returns its `clientSecret`. The booking waits as
+`PENDING_PAYMENT`, invisible to the cleaner (it reads as 404, not 403), until
+Stripe reports the card authorised; then it becomes `REQUESTED`.
+
+Two paths bring that news, deliberately:
+
+- the `payment_intent.amount_capturable_updated` **webhook**, and
+- `POST /bookings/:id/payment/sync`, which the customer's browser calls as
+  soon as Stripe.js confirms the card. The booking moves on at once, and a
+  webhook outage delays nothing.
+
+Both apply the same idempotent reconciliation, which only ever moves a payment
+forward, so they can race or repeat freely.
+
+**Accepting charges the card.** The capture runs *inside* the acceptance
+transaction, after the booking update:
+
+- the update comes first, so a clash caught by the no-overlap constraint fails
+  the transaction **before** the card is charged;
+- a capture that fails (hold lapsed, Stripe unreachable) rolls the acceptance
+  back — a booking is never `ACCEPTED` without the money.
+
+The transaction therefore stays open for a Stripe round trip (bounded at 20 s;
+the SDK makes one retry with an 8 s timeout). That holds one pooled connection
+per in-flight accept — acceptable at this scale, and the reason nothing inside
+it may use the root Prisma client, which with `connection_limit=1` would wait
+forever for the connection the transaction is holding.
+
+Why hold-then-capture rather than charge up front: a declined or ignored
+request costs nothing. Charging immediately would make every decline a refund,
+and Stripe keeps its processing fee on refunds. The cost is that a cleaner must
+answer within the card's authorisation window (about a week); after that
+Stripe voids the hold and the booking becomes `EXPIRED`.
+
+### Story 3.3 — Cancellation and refunds
+
+| Situation | Money |
+| --- | --- |
+| Customer abandons an unpaid request | Hold released |
+| Cleaner declines, or either side cancels before acceptance | Hold released |
+| Cleaner cancels an accepted or started clean | Full refund |
+| Customer cancels more than 24 h before the start | Full refund |
+| Customer cancels within 24 h | Refund minus `LATE_CANCELLATION_FEE_BPS` (50%); the fee goes to the cleaner, less the platform's share |
+
+**Refunds commit with the cancellation or not at all** — they run inside its
+transaction, so a booking can never read as cancelled while the money stayed
+put. Releasing a hold is the opposite: best effort, after the commit, because
+nothing was taken and an unreleased hold lapses on its own.
+
+### Story 3.4 — Paying the cleaner
+
+Completing a clean records the payout (price less `PLATFORM_FEE_BPS`) in the
+completion's transaction, then transfers it to the cleaner's Connect account
+once that has committed. This is Stripe's "separate charges and transfers"
+model: the platform charges the customer, holds the funds while the job
+happens, and pays the cleaner only for work done. `source_transaction` ties the
+transfer to the booking's charge, so it can be made before those funds settle.
+
+A transfer that fails (the cleaner's account restricted, say) is recorded as
+`FAILED` with Stripe's reason, never surfaced to the cleaner who just finished,
+and retried by an admin through `POST /bookings/:id/payout`.
+
+### Never twice
+
+Every Stripe call carries an idempotency key, which protects a network retry
+of *that request*. Separate attempts are a different problem — a cancel retried
+after a timeout, a payout retried a day later — and Stripe replays a failed
+request's error for 24 hours, so reusing a key across attempts would repeat the
+failure too. So:
+
+- **refunds and transfers first ask Stripe what already happened** (listing by
+  payment or by `transfer_group = bookingId`) and adopt it instead of repeating
+  it;
+- **a capture that errors** is checked against the intent's actual status, and
+  adopted if it in fact succeeded;
+- **each payout attempt gets its own key** (`payoutAttempts` is part of it).
+
+### The webhook
+
+`POST /payments/webhook` is public — Stripe holds no user token — so its
+signature is the only thing authenticating it: an HMAC over the exact bytes
+received. Nest parses JSON before any handler runs, and re-serialised JSON is
+different bytes, so both entry points create the app with `rawBody: true`
+(`NEST_APP_OPTIONS` in `bootstrap.ts`). `serverless.spec.ts` drives a signed
+event through the real serverless app and fails if that option is lost.
+
+Handling rules:
+
+- **At most once.** Processed event ids are stored; a redelivery is
+  acknowledged and skipped. The id is recorded only after its handler
+  succeeds, so a failure answers 500 and Stripe redelivers.
+- **Fresh reads, not snapshots.** Handlers re-fetch the intent or account
+  rather than trusting the event's copy, so out-of-order delivery cannot apply
+  stale state — and the event payload's API version never matters.
+- **Unknown types are acknowledged**, or Stripe would retry them for days.
+- `STRIPE_WEBHOOK_SECRET` accepts several secrets: Stripe gives the "your
+  account" destination (payment events) and the "connected accounts"
+  destination (`account.updated`) one each, even at the same URL.
+
+`payments` and `stripe_events` have row-level security enabled with no
+policies, like every table in production's public schema, so card and payout
+records are unreachable through Supabase's auto-generated REST API.
 
 ## Deploying to Vercel
 
@@ -345,8 +510,13 @@ not merely that the TypeScript compiles.
 
 Deliberately out of scope so far, and the most likely next steps:
 
-- **Payments** — nothing charges for a completed booking. `quotedPriceMinor` is
-  recorded and then nothing happens to it.
+- **Sweeping stale bookings.** An abandoned `PENDING_PAYMENT` booking never
+  expires on its own (Stripe does not void an intent nobody confirmed), and a
+  `REQUESTED` one waits for Stripe to void its hold. Both need a scheduled job;
+  neither blocks a slot meanwhile.
+- **Admin refunds, disputes and receipts.** Refunds happen only through
+  cancellation; there is no goodwill refund, no chargeback handling, and no
+  receipt email.
 - **Search and matching** — a customer must already know which cleaner they
   want; there is no "find me someone near E1 on Tuesday".
 - **Recurring bookings** — every booking is a one-off.
@@ -362,6 +532,6 @@ Deliberately out of scope so far, and the most likely next steps:
 - **The exclusion constraint has CI's database available to it now** (added
   alongside the Vercel work, for `serverless.spec.ts`) **but no test yet
   exercises it.** Deleting `20260912180149_booking_no_overlap`'s SQL would
-  still pass all 128 tests. Closing this is now a small addition — insert two
+  still pass every test. Closing this is now a small addition — insert two
   overlapping `ACCEPTED` bookings directly and assert the second throws —
   rather than the CI infrastructure change it would have been before.

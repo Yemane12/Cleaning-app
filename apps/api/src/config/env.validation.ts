@@ -61,6 +61,44 @@ export const envSchema = z
       .positive()
       .default(10 * 1024 * 1024),
 
+    // --- Payments (Stripe) ---
+    /** sk_… or a restricted rk_… key. Test and live keys are both accepted. */
+    STRIPE_SECRET_KEY: z
+      .string()
+      .regex(/^(sk|rk)_(test|live)_\w+$/, 'must be a Stripe secret (sk_) or restricted (rk_) key'),
+    /**
+     * Signing secret(s) of the webhook endpoint, comma-separated. Stripe gives
+     * the "your account" and "connected accounts" destinations separate
+     * secrets even when both point at the same URL.
+     */
+    STRIPE_WEBHOOK_SECRET: z
+      .string()
+      .transform((value) =>
+        value
+          .split(',')
+          .map((secret) => secret.trim())
+          .filter(Boolean),
+      )
+      .refine(
+        (secrets) => secrets.length > 0 && secrets.every((s) => s.startsWith('whsec_')),
+        'must be one or more whsec_… secrets, comma-separated',
+      ),
+    /**
+     * Where Stripe sends a cleaner after payout onboarding — and back to, if
+     * the link expired. That page should call GET /payments/connect/status.
+     */
+    STRIPE_CONNECT_RETURN_URL: z.string().url(),
+    /** ISO country of cleaners' payout accounts; must match the platform's region. */
+    STRIPE_CONNECT_COUNTRY: z.string().length(2).default('GB'),
+    /** Platform commission on each payout, in basis points (1500 = 15%). */
+    PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(1500),
+    /**
+     * Share of the price a customer forfeits when cancelling inside the
+     * free-cancellation window (5000 = 50%). The cleaner receives it, less
+     * the platform fee, for the slot they held.
+     */
+    LATE_CANCELLATION_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(5000),
+
     /**
      * Comma-separated browser origins allowed to call this API cross-origin,
      * e.g. "https://app.example.com,https://staging.example.com". Empty by

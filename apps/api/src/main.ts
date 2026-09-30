@@ -3,7 +3,7 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { configureApp } from './bootstrap';
+import { NEST_APP_OPTIONS, configureApp } from './bootstrap';
 import { Env } from './config/env.validation';
 import { PrismaService } from './prisma/prisma.service';
 
@@ -15,7 +15,7 @@ import { PrismaService } from './prisma/prisma.service';
  * down and recreated between invocations.
  */
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, NEST_APP_OPTIONS);
   configureApp(app);
 
   const config = app.get(ConfigService<Env, true>);

@@ -1,5 +1,5 @@
 import { BookingStatus } from '@prisma/client';
-import { BOOKING_TRANSITIONS, canTransition, isTerminal } from './booking-state';
+import { BOOKING_TRANSITIONS, OPEN_STATUSES, canTransition, isTerminal } from './booking-state';
 
 describe('booking state machine', () => {
   const ALL = Object.values(BookingStatus);
@@ -9,12 +9,15 @@ describe('booking state machine', () => {
   });
 
   it('allows the happy path end to end', () => {
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.REQUESTED)).toBe(true);
     expect(canTransition(BookingStatus.REQUESTED, BookingStatus.ACCEPTED)).toBe(true);
     expect(canTransition(BookingStatus.ACCEPTED, BookingStatus.IN_PROGRESS)).toBe(true);
     expect(canTransition(BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED)).toBe(true);
   });
 
   it('refuses to skip the middle of the happy path', () => {
+    // An unpaid request can never be accepted — the card is authorised first.
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.ACCEPTED)).toBe(false);
     expect(canTransition(BookingStatus.REQUESTED, BookingStatus.IN_PROGRESS)).toBe(false);
     expect(canTransition(BookingStatus.REQUESTED, BookingStatus.COMPLETED)).toBe(false);
     expect(canTransition(BookingStatus.ACCEPTED, BookingStatus.COMPLETED)).toBe(false);
@@ -32,6 +35,7 @@ describe('booking state machine', () => {
       BookingStatus.DECLINED,
       BookingStatus.CANCELLED_BY_CUSTOMER,
       BookingStatus.CANCELLED_BY_CLEANER,
+      BookingStatus.EXPIRED,
     ]) {
       expect(isTerminal(status)).toBe(true);
       expect(ALL.filter((to) => canTransition(status, to))).toEqual([]);
@@ -62,5 +66,33 @@ describe('booking state machine', () => {
     for (const status of ALL) {
       expect(canTransition(status, status)).toBe(false);
     }
+  });
+
+  it('lets only the customer end an unpaid request — the cleaner never sees it', () => {
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.CANCELLED_BY_CUSTOMER)).toBe(
+      true,
+    );
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.CANCELLED_BY_CLEANER)).toBe(
+      false,
+    );
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.DECLINED)).toBe(false);
+  });
+
+  it('expires only bookings whose payment was never taken', () => {
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.EXPIRED)).toBe(true);
+    expect(canTransition(BookingStatus.REQUESTED, BookingStatus.EXPIRED)).toBe(true);
+    // Once accepted the money is captured; a lapsed hold is no longer possible.
+    expect(canTransition(BookingStatus.ACCEPTED, BookingStatus.EXPIRED)).toBe(false);
+  });
+
+  it('counts exactly the non-terminal statuses as open', () => {
+    expect([...OPEN_STATUSES].sort()).toEqual(
+      [
+        BookingStatus.PENDING_PAYMENT,
+        BookingStatus.REQUESTED,
+        BookingStatus.ACCEPTED,
+        BookingStatus.IN_PROGRESS,
+      ].sort(),
+    );
   });
 });

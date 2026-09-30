@@ -1,5 +1,5 @@
-import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
-import { UserRole, UserStatus } from '@prisma/client';
+import { ConflictException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { BookingStatus, Prisma, UserRole, UserStatus } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseJwtPayload } from './interfaces/supabase-jwt-payload.interface';
@@ -25,11 +25,31 @@ describe('AuthService', () => {
     ...overrides,
   });
 
-  let prisma: { user: { findUnique: jest.Mock; create: jest.Mock; update: jest.Mock } };
+  let prisma: {
+    user: {
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      create: jest.Mock;
+      update: jest.Mock;
+    };
+    booking: { count: jest.Mock };
+    auditLog: { create: jest.Mock };
+    $transaction: jest.Mock;
+  };
   let service: AuthService;
 
   beforeEach(() => {
-    prisma = { user: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() } };
+    prisma = {
+      user: {
+        findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(storedUser({ role: UserRole.CLEANER })),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      booking: { count: jest.fn().mockResolvedValue(0) },
+      auditLog: { create: jest.fn() },
+      $transaction: jest.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
+    };
     service = new AuthService(prisma as unknown as PrismaService);
   });
 
@@ -128,5 +148,60 @@ describe('AuthService', () => {
         }),
       }),
     );
+  });
+
+  describe('becomeCleaner', () => {
+    const customer = {
+      id: userId,
+      email: 'cleaner@example.com',
+      role: UserRole.CUSTOMER,
+      status: UserStatus.ACTIVE,
+    };
+
+    it('switches a customer to CLEANER with a profile, and audits it', async () => {
+      await service.becomeCleaner(customer);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: userId, role: UserRole.CUSTOMER },
+        data: {
+          role: UserRole.CLEANER,
+          cleanerProfile: { upsert: { create: {}, update: {} } },
+        },
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ action: 'REGISTERED_AS_CLEANER', actorId: userId }),
+      });
+    });
+
+    it('only counts bookings still in flight as blocking', async () => {
+      await service.becomeCleaner(customer);
+
+      const statuses = prisma.booking.count.mock.calls[0][0].where.status.in;
+      expect(statuses).toEqual(
+        expect.arrayContaining([BookingStatus.PENDING_PAYMENT, BookingStatus.ACCEPTED]),
+      );
+      expect(statuses).not.toContain(BookingStatus.COMPLETED);
+    });
+
+    it('refuses while the customer has open bookings', async () => {
+      prisma.booking.count.mockResolvedValue(1);
+
+      await expect(service.becomeCleaner(customer)).rejects.toThrow(/open bookings/);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses an admin — self-service never changes a privileged role', async () => {
+      await expect(
+        service.becomeCleaner({ ...customer, role: UserRole.ADMIN }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('reports a concurrent role change as a conflict', async () => {
+      prisma.user.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('gone', { code: 'P2025', clientVersion: 'x' }),
+      );
+
+      await expect(service.becomeCleaner(customer)).rejects.toBeInstanceOf(ConflictException);
+    });
   });
 });

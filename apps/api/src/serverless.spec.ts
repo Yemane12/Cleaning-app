@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { PrismaClient } from '@prisma/client';
+import Stripe from 'stripe';
 import request from 'supertest';
 import { getServer } from './serverless';
 
@@ -39,5 +42,67 @@ describe('serverless entry point', () => {
     const second = await getServer();
 
     expect(second).toBe(first);
+  });
+
+  /**
+   * Stripe signs the exact bytes it sends. This drives a signed event through
+   * the same Express app production serves, proving the raw body survives
+   * Nest's JSON parsing on this path — a unit test of the verifier cannot,
+   * because it is handed the bytes directly.
+   */
+  describe('Stripe webhook', () => {
+    const prisma = new PrismaClient();
+    const eventId = `evt_test_${randomUUID()}`;
+    // Unhandled type: exercises verification and the event log, nothing else.
+    const body = JSON.stringify({
+      id: eventId,
+      object: 'event',
+      type: 'customer.created',
+      data: { object: { id: 'cus_test' } },
+    });
+    const sign = (payload: string, secret = process.env.STRIPE_WEBHOOK_SECRET!) =>
+      new Stripe('sk_test_placeholder').webhooks.generateTestHeaderString({ payload, secret });
+
+    afterAll(async () => {
+      await prisma.stripeEvent.deleteMany({ where: { id: eventId } });
+      await prisma.$disconnect();
+    });
+
+    it('accepts a correctly signed event, unauthenticated, and records it', async () => {
+      const server = await getServer();
+
+      await request(server)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .set('Stripe-Signature', sign(body))
+        .send(body)
+        .expect(200, { received: true });
+
+      await expect(prisma.stripeEvent.findUnique({ where: { id: eventId } })).resolves.toEqual(
+        expect.objectContaining({ type: 'customer.created' }),
+      );
+    });
+
+    it('rejects a tampered body', async () => {
+      const server = await getServer();
+      const tampered = body.replace('cus_test', 'cus_evil');
+
+      await request(server)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .set('Stripe-Signature', sign(body))
+        .send(tampered)
+        .expect(400);
+    });
+
+    it('rejects an unsigned request', async () => {
+      const server = await getServer();
+
+      await request(server)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .send(body)
+        .expect(400);
+    });
   });
 });

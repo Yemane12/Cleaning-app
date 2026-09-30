@@ -12,6 +12,12 @@ booking lifecycle. Only KYC-approved cleaners are bookable, and overlapping
 confirmed bookings are prevented by a database constraint rather than an
 application check.
 
+**Epic 3 — Payments** (Stripe): a card hold when a customer books, the charge
+when the cleaner accepts, refunds on cancellation (with a late-cancellation
+fee), and payouts to cleaners through Stripe Connect when a clean is completed.
+Customers can register as cleaners themselves; a cleaner is bookable only once
+both KYC and payout setup are done.
+
 ## Getting started
 
 ```bash
@@ -61,22 +67,39 @@ admin approves or rejects via `PATCH /api/v1/kyc/reviews/:userId`.
 ## Booking a clean
 
 ```bash
-# 1. Find bookable slots (empty unless the cleaner is KYC-approved)
+# 1. Find bookable slots (empty unless the cleaner is KYC-approved and can be paid)
 curl "http://localhost:3000/api/v1/cleaners/$CLEANER_ID/slots?date=2026-10-05&durationMinutes=120" \
   -H "Authorization: Bearer $TOKEN"
 
-# 2. Request one
+# 2. Request one. The response's payment.clientSecret is for Stripe.js.
 curl -X POST http://localhost:3000/api/v1/bookings \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"cleanerId":"...","serviceId":"...","addressId":"...","scheduledStart":"2026-10-05T09:00:00Z","durationMinutes":120}'
 
-# 3. The cleaner accepts, then starts, then completes
+# 3. The customer's browser confirms the card with Stripe.js
+#    (stripe.confirmCardPayment(clientSecret, …)), then tells the API:
+curl -X POST http://localhost:3000/api/v1/bookings/$BOOKING_ID/payment/sync \
+  -H "Authorization: Bearer $TOKEN"
+#    The booking is now REQUESTED and visible to the cleaner.
+
+# 4. The cleaner accepts (this charges the card), then starts, then completes
+#    (this pays the cleaner).
 curl -X PATCH http://localhost:3000/api/v1/bookings/$BOOKING_ID/accept \
   -H "Authorization: Bearer $CLEANER_TOKEN"
 ```
 
 A request does not reserve the slot — several customers may request the same
-time, and whoever the cleaner accepts first gets it.
+time, and whoever the cleaner accepts first gets it. Until then the card is
+only held, so a declined request costs the customer nothing.
+
+## Becoming a cleaner
+
+```bash
+curl -X POST http://localhost:3000/api/v1/auth/me/become-cleaner -H "Authorization: Bearer $TOKEN"
+# Then KYC (above), and payout setup — open the returned url in a browser:
+curl -X POST http://localhost:3000/api/v1/payments/connect/onboarding-link -H "Authorization: Bearer $TOKEN"
+curl http://localhost:3000/api/v1/payments/connect/status -H "Authorization: Bearer $TOKEN"
+```
 
 ## Deploying to Vercel
 
@@ -95,6 +118,14 @@ serverless adaptation actually changes and why.
      with `?pgbouncer=true&connection_limit=1`.
    - `DIRECT_URL` — Supabase's **direct** connection string (port 5432).
    - `CORS_ORIGINS` — your frontend's deployed URL(s), comma-separated.
+   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_RETURN_URL` —
+     see `.env.example`. In Stripe, enable **Connect**, then add two webhook
+     destinations at `https://your-app.vercel.app/api/v1/payments/webhook`:
+     one for events on **your account** (`payment_intent.amount_capturable_updated`,
+     `payment_intent.succeeded`, `payment_intent.canceled`,
+     `payment_intent.payment_failed`) and one for events on **connected
+     accounts** (`account.updated`). Put both signing secrets in
+     `STRIPE_WEBHOOK_SECRET`, comma-separated.
    - Preview deployments run on every PR. If `DATABASE_URL` there points at
      the same Supabase project as production, every PR gets a live function
      writing to production data — either point Preview at a separate

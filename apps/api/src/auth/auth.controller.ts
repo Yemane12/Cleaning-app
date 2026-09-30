@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -17,6 +17,14 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.getProfile(user.id);
+  }
+
+  /** A customer opts in to working as a cleaner; KYC and payout setup follow. */
+  @Roles(UserRole.CUSTOMER)
+  @Post('me/become-cleaner')
+  @HttpCode(200)
+  becomeCleaner(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.becomeCleaner(user);
   }
 
   @Roles(UserRole.ADMIN)

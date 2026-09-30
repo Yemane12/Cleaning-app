@@ -129,8 +129,9 @@ export class AvailabilityService {
   async getSlots(cleanerUserId: string, query: SlotQueryDto, now = new Date()): Promise<Slot[]> {
     const profile = await this.getProfileOrThrow(cleanerUserId);
 
-    // An unverified cleaner is not bookable, so they have no slots to show.
-    if (profile.kycStatus !== KycStatus.APPROVED) {
+    // An unverified cleaner, or one who cannot yet be paid, is not bookable,
+    // so they have no slots to show.
+    if (profile.kycStatus !== KycStatus.APPROVED || !profile.payoutsEnabled) {
       return [];
     }
 

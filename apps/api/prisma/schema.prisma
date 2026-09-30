@@ -108,6 +108,12 @@ model CleanerProfile {
   kycReviewedAt      DateTime?
   kycRejectionReason String?
 
+  /// Stripe Connect account that receives this cleaner's payouts.
+  stripeAccountId String? @unique
+  /// Cached from Stripe (transfers capability active and payouts enabled).
+  /// A cleaner who cannot be paid cannot be booked, like one without KYC.
+  payoutsEnabled  Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -266,6 +272,9 @@ model AvailabilityException {
 }
 
 enum BookingStatus {
+  /// Created, but the customer's card is not yet authorised. Invisible to
+  /// the cleaner until it is.
+  PENDING_PAYMENT
   REQUESTED
   ACCEPTED
   DECLINED
@@ -273,6 +282,8 @@ enum BookingStatus {
   COMPLETED
   CANCELLED_BY_CUSTOMER
   CANCELLED_BY_CLEANER
+  /// The card authorisation lapsed before the cleaner accepted.
+  EXPIRED
 }
 
 model Booking {
@@ -313,6 +324,7 @@ model Booking {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
   events    BookingEvent[]
+  payment   Payment?
 
   @@index([cleanerId, scheduledStart])
   @@index([customerId, scheduledStart])
@@ -336,4 +348,81 @@ model BookingEvent {
 
   @@index([bookingId, createdAt])
   @@map("booking_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Epic 3: Payments
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PaymentStatus {
+  /// PaymentIntent created; the customer has not authorised a card yet.
+  REQUIRES_PAYMENT
+  /// Funds held on the card (manual capture), not yet taken.
+  AUTHORIZED
+  /// Taken — the cleaner accepted.
+  CAPTURED
+  /// Hold released, or never completed. No money moved.
+  CANCELED
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+
+enum PayoutStatus {
+  /// Nothing is owed to the cleaner (yet, or at all).
+  NOT_DUE
+  /// Owed, transfer not yet made — waiting on a retry.
+  PENDING
+  PAID
+  FAILED
+}
+
+/// The money side of one booking. Amounts are integer minor units, like
+/// every other price in this schema. Stripe is the source of truth for the
+/// card; this row is what the API decided and what it has confirmed.
+model Payment {
+  id        String  @id @default(uuid()) @db.Uuid
+  bookingId String  @unique @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  stripePaymentIntentId String  @unique
+  stripeChargeId        String?
+
+  status         PaymentStatus @default(REQUIRES_PAYMENT)
+  amountMinor    Int
+  currency       String
+  refundedMinor  Int           @default(0)
+  /// Last decline or error Stripe reported, kept for support.
+  failureMessage String?
+
+  authorizedAt DateTime?
+  capturedAt   DateTime?
+  canceledAt   DateTime?
+
+  payoutStatus     PayoutStatus @default(NOT_DUE)
+  payoutMinor      Int?
+  platformFeeMinor Int?
+  stripeTransferId String?      @unique
+  payoutError      String?
+  /// Failed transfer attempts. Part of the transfer's idempotency key: Stripe
+  /// replays a failed request's error for 24h, so a retry needs a new key.
+  payoutAttempts   Int          @default(0)
+  paidOutAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([payoutStatus])
+  @@map("payments")
+}
+
+/// Webhook events already handled. Stripe delivers at least once, so a
+/// redelivery is recognised by its evt_… id and acknowledged without
+/// being applied twice.
+model StripeEvent {
+  id         String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@map("stripe_events")
 }
