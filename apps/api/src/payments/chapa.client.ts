@@ -1,3 +1,5 @@
+import { Logger } from '@nestjs/common';
+
 /**
  * A thin, typed client for the parts of Chapa's API this app uses.
  *
@@ -88,6 +90,8 @@ export interface ChapaTransferStatus {
 type Body = { json: object } | { form: Record<string, string> };
 
 export class ChapaClient {
+  private readonly logger = new Logger(ChapaClient.name);
+
   constructor(
     private readonly secretKey: string,
     private readonly fetchImpl: typeof fetch = fetch,
@@ -122,10 +126,15 @@ export class ChapaClient {
     return { checkoutUrl };
   }
 
-  /** The transaction as Chapa sees it, or null if Chapa has never heard of it. */
+  /**
+   * The transaction as Chapa sees it, or null while Chapa has no paid
+   * transaction under this reference — it never heard of it, or the checkout
+   * is still unpaid (Chapa answers both with a 404).
+   */
   async verify(txRef: string): Promise<ChapaTransaction | null> {
     try {
       const payload = await this.call<{
+        message?: unknown;
         data?: {
           status?: string;
           amount?: string | number;
@@ -137,6 +146,9 @@ export class ChapaClient {
 
       const data = payload.data;
       if (!data) {
+        this.logger.log(
+          `Verify ${txRef}: no transaction data (${messageOf(payload) ?? 'no message'})`,
+        );
         return null;
       }
 
@@ -149,6 +161,8 @@ export class ChapaClient {
       };
     } catch (error) {
       if (isNotFound(error)) {
+        // Chapa's own words tell "never heard of it" from "not paid yet".
+        this.logger.log(`Verify ${txRef}: ${error.status} ${error.message}`);
         return null;
       }
       throw error;
@@ -302,8 +316,11 @@ function messageOf(payload: { message?: unknown } | null): string | undefined {
   return undefined;
 }
 
-/** Chapa answers an unknown reference with 404, or a 400 saying "not found". */
-function isNotFound(error: unknown): boolean {
+/**
+ * Chapa answers an unknown reference with 404, or a 400 saying "not found";
+ * an unpaid checkout with 404 "Payment not paid yet".
+ */
+function isNotFound(error: unknown): error is ChapaError {
   return (
     error instanceof ChapaError &&
     (error.status === 404 || (error.status === 400 && /not found/i.test(error.message)))
