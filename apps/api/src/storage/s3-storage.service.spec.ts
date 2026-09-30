@@ -99,7 +99,9 @@ describe('S3StorageService', () => {
     );
   });
 
-  it('echoes metadata as x-amz-meta headers the client must replay', async () => {
+  // The presigner carries metadata in the query string; as headers too it
+  // would be unsigned and rejected. s3-storage.presign.spec.ts checks the URL.
+  it('passes metadata to the command but not to the client as headers', async () => {
     const service = build();
 
     const upload = await service.createPresignedUpload({
@@ -109,7 +111,9 @@ describe('S3StorageService', () => {
       metadata: { 'document-id': 'doc-1' },
     });
 
-    expect(upload.requiredHeaders['x-amz-meta-document-id']).toBe('doc-1');
+    const command = signedUrlMock.mock.calls[0][1] as PutObjectCommand;
+    expect(command.input.Metadata).toEqual({ 'document-id': 'doc-1' });
+    expect(Object.keys(upload.requiredHeaders).some((h) => /^x-amz-meta-/i.test(h))).toBe(false);
   });
 
   it('expires the upload URL after the configured TTL', async () => {

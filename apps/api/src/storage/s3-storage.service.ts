@@ -102,9 +102,12 @@ export class S3StorageService implements OnModuleDestroy {
       requiredHeaders['x-amz-server-side-encryption-aws-kms-key-id'] = encryption.SSEKMSKeyId;
     }
 
-    for (const [name, value] of Object.entries(request.metadata ?? {})) {
-      requiredHeaders[`x-amz-meta-${name}`] = value;
-    }
+    // Metadata is deliberately absent: the presigner hoists `x-amz-meta-*`
+    // into the URL's query string, where it is already signed. Sent again as
+    // headers it would be unsigned `x-amz-*` headers, which S3 rejects with
+    // 403 "There were headers present in the request which were not signed".
+    // This list must equal X-Amz-SignedHeaders minus `host`; the real-presigner
+    // spec holds it to that.
 
     this.logger.debug(`Issued upload URL for ${request.key} (expires in ${ttl}s)`);
 

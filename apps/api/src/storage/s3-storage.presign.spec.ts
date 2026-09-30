@@ -57,6 +57,30 @@ describe('S3StorageService — real presigned URLs', () => {
     expect(signedHeaders(url)).toEqual(expect.arrayContaining(['content-type', 'content-length']));
   });
 
+  // A client sends requiredHeaders verbatim. One that is not signed is an
+  // unsigned x-amz-* header (403); one that is signed but missing breaks the
+  // signature (403). Only exact equality with X-Amz-SignedHeaders is safe.
+  it.each([
+    ['sse-s3', {}],
+    ['sse-kms', { KYC_S3_KMS_KEY_ID: 'arn:aws:kms:eu-west-1:1:key/abc' }],
+    ['provider-managed', {}],
+  ] as const)('tells the client to send exactly the signed headers (%s)', async (mode, extra) => {
+    const { url, requiredHeaders } = await upload(
+      build({ KYC_S3_ENCRYPTION: mode, ...extra } as Partial<Env>),
+    );
+
+    const required = Object.keys(requiredHeaders).map((h) => h.toLowerCase());
+    const signed = signedHeaders(url).filter((h) => h !== 'host');
+
+    expect(required.sort()).toEqual(signed.sort());
+  });
+
+  it('carries metadata in the signed query string, not as headers', async () => {
+    const { url } = await upload(build());
+
+    expect(new URL(url).searchParams.get('x-amz-meta-document-id')).toBe('doc-1');
+  });
+
   it('carries the SSE-S3 request in sse-s3 mode', async () => {
     const { url } = await upload(build());
     const search = new URL(url).searchParams;
