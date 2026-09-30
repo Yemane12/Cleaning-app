@@ -279,6 +279,8 @@ transaction-mode pooler doesn't support the session-level features
 migrations need. This is a Prisma `datasource` block feature
 (`url` / `directUrl`), not application code.
 
+**`public/` exists only to satisfy Vercel.** With a build command and no framework preset, Vercel requires a static output directory and fails the deploy without one. `public/` holds just a `robots.txt` disallowing crawlers. It is deliberately not `dist/`: that would pass the check but publish the compiled server code as downloadable files. Static files take precedence over the catch-all rewrite, so only `/robots.txt` is served from here; every other path still reaches the function.
+
 **Migrations do not run in the Vercel build**, on purpose. Vercel builds
 Preview deployments for every PR; if the build command ran
 `prisma migrate deploy` against a shared `DATABASE_URL`, every PR would apply
