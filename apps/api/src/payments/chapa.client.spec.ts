@@ -105,6 +105,14 @@ describe('ChapaClient', () => {
 
       await expect(client.verify('bk-unknown')).resolves.toBeNull();
     });
+
+    it('returns null for a checkout that is not paid yet', async () => {
+      fetchMock.mockReturnValue(
+        answer(404, { status: null, message: 'Payment not paid yet', data: null }),
+      );
+
+      await expect(client.verify('bk-1')).resolves.toBeNull();
+    });
   });
 
   it('refunds as a form post, amount in birr', async () => {

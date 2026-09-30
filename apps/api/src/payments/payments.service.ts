@@ -110,6 +110,15 @@ export class PaymentsService {
 
     const data = reconcile(payment, transaction);
 
+    // What Chapa said, in one line: the only way to tell "not paid yet" from
+    // "paid, but something here is wrong" when a booking stays unconfirmed.
+    this.logger.log(
+      transaction
+        ? `Payment ${payment.id}: Chapa reports ${transaction.status || '(no status)'}, ` +
+            `${transaction.amountMinor} ${transaction.currency || '(no currency)'}`
+        : `Payment ${payment.id}: Chapa has no paid transaction ${payment.txRef} (not found, or not paid yet)`,
+    );
+
     if (data?.failureMessage && data.status === undefined) {
       this.logger.warn(`Payment ${payment.id}: ${data.failureMessage}`);
     }

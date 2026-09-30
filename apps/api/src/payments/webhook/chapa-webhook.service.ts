@@ -78,18 +78,23 @@ export class ChapaWebhookService {
   /** Routes a nudge to whatever it names. Unknown shapes are acknowledged and ignored. */
   async process(payload: Record<string, unknown>): Promise<void> {
     const txRef = stringField(payload, 'tx_ref') ?? stringField(payload, 'trx_ref');
+    const reference = stringField(payload, 'reference');
+
+    // Event, reference and status only: the rest of the payload is the
+    // customer's personal data.
+    this.logger.log(
+      `Chapa notification ${stringField(payload, 'event') ?? '(no event)'}: ` +
+        `${txRef ?? reference ?? '(no reference)'}, status ${stringField(payload, 'status') ?? '(none)'}`,
+    );
+
     if (txRef) {
       await this.bookings.onPaymentNudge(txRef);
       return;
     }
 
-    const reference = stringField(payload, 'reference');
     if (reference?.startsWith('po-')) {
       await this.payments.syncPayoutByReference(reference);
-      return;
     }
-
-    this.logger.debug(`Ignoring notification ${stringField(payload, 'event') ?? '(no event)'}`);
   }
 }
 

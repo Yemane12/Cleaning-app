@@ -122,7 +122,11 @@ export class ChapaClient {
     return { checkoutUrl };
   }
 
-  /** The transaction as Chapa sees it, or null if Chapa has never heard of it. */
+  /**
+   * The transaction as Chapa sees it, or null while Chapa has no paid
+   * transaction under this reference — it never heard of it, or the checkout
+   * is still unpaid (Chapa answers both with a 404).
+   */
   async verify(txRef: string): Promise<ChapaTransaction | null> {
     try {
       const payload = await this.call<{
@@ -302,7 +306,10 @@ function messageOf(payload: { message?: unknown } | null): string | undefined {
   return undefined;
 }
 
-/** Chapa answers an unknown reference with 404, or a 400 saying "not found". */
+/**
+ * Chapa answers an unknown reference with 404, or a 400 saying "not found";
+ * an unpaid checkout with 404 "Payment not paid yet".
+ */
 function isNotFound(error: unknown): boolean {
   return (
     error instanceof ChapaError &&
