@@ -18,7 +18,7 @@ describe('AppModule', () => {
   const env = {
     DATABASE_URL: 'postgresql://user:pass@localhost:5432/test',
     SUPABASE_URL: 'https://project.supabase.co',
-    AWS_REGION: 'eu-west-2',
+    KYC_S3_REGION: 'eu-west-2',
     KYC_S3_BUCKET: 'kyc-documents',
   };
 

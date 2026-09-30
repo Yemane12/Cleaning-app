@@ -14,7 +14,7 @@ must pass identity verification (KYC) before they can be matched to a job.
 ```
 Client apps ──► NestJS API (apps/api) ──► PostgreSQL (Prisma)
      │                  │
-     │                  └────────────► S3 (private KYC bucket)
+     │                  └────────────► Supabase Storage (private KYC bucket, S3 API)
      └──► Supabase Auth (sign-up, sign-in, token issuance)
 ```
 
@@ -117,8 +117,17 @@ Controls worth keeping:
 
 - **Content type and length are signed into the URL.** A client that declares a
   2 KB JPEG cannot then push a 2 GB payload — S3 rejects it, not the API.
-- **Encryption is never optional.** SSE-KMS when `KYC_S3_KMS_KEY_ID` is set,
-  SSE-S3 otherwise.
+- **Encryption is never optional.** `KYC_S3_ENCRYPTION` picks who applies it: `sse-s3` or
+  `sse-kms` sign an encryption request into every upload URL (AWS); `provider-managed`
+  sends none because the store encrypts at rest itself — Supabase Storage, which
+  production uses, rejects the SSE request headers.
+- **No checksum is signed into upload URLs.** The AWS SDK's default computes a CRC32
+  at signing time — for a presigned PUT, of an empty body — and the store would then
+  reject every real upload. `requestChecksumCalculation: 'WHEN_REQUIRED'` disables
+  that; `s3-storage.presign.spec.ts` signs real URLs to keep it disabled.
+- **Storage config uses `KYC_S3_*`, never `AWS_*`.** Vercel/Lambda set `AWS_REGION`
+  and `AWS_*` credentials for their own role; reading them would sign URLs with the
+  platform's identity.
 - **Keys are scoped per user**: `kyc/{userId}/{documentType}/{uuid}.{ext}`.
 - **Short TTLs**: 5 minutes for uploads, 2 minutes for reads, both configurable.
 - **Object keys are never returned to clients.** Documents are addressed by id.
@@ -341,9 +350,11 @@ Deliberately out of scope so far, and the most likely next steps:
 - **Search and matching** — a customer must already know which cleaner they
   want; there is no "find me someone near E1 on Tuesday".
 - **Recurring bookings** — every booking is a one-off.
-- **S3 bucket infrastructure** — the bucket must exist, be private (Block Public
-  Access on), versioned, encrypted, and carry a lifecycle rule for verified
-  documents. There is no IaC in this repository yet.
+- **KYC storage is S3-compatible, not AWS-specific.** Production uses Supabase
+  Storage (`kyc-documents`: private, 10 MB, the same five MIME types the API
+  allows — enforced by Supabase too). Its S3 access keys reach every bucket in the
+  project, which AWS IAM could scope to one prefix; keep them only in Vercel
+  secrets.
 - **Malware scanning** of uploaded documents, and OCR/liveness checks.
 - **Rate limiting** on presigned-URL issuance.
 - **Notifications** — no one is told when KYC is decided or a booking changes

@@ -22,20 +22,36 @@ export const envSchema = z
     /** Overrides the issuer derived from SUPABASE_URL. Rarely needed. */
     SUPABASE_JWT_ISSUER: z.string().url().optional(),
 
-    // --- KYC document storage ---
-    AWS_REGION: z.string().min(1),
+    // --- KYC document storage (any S3-compatible store) ---
+    //
+    // Deliberately not the standard AWS_* names. Serverless runtimes (Vercel,
+    // Lambda) set AWS_REGION and AWS_* credentials for their own execution
+    // role, so reading those would silently sign KYC URLs with the platform's
+    // region and identity instead of the bucket's.
+    KYC_S3_REGION: z.string().min(1),
     KYC_S3_BUCKET: z.string().min(1),
-    /** Optional: omit on ECS/EKS so the SDK resolves the task/pod role instead. */
-    AWS_ACCESS_KEY_ID: z.string().optional(),
-    AWS_SECRET_ACCESS_KEY: z.string().optional(),
-    /** Point at MinIO/LocalStack for local development. */
-    AWS_S3_ENDPOINT: z.string().url().optional(),
-    AWS_S3_FORCE_PATH_STYLE: z
+    /**
+     * Both or neither. Omit only on a host whose default credential chain is
+     * your own identity (ECS task role, EKS pod role). On Vercel they are
+     * required: the default chain there resolves to Vercel's role.
+     */
+    KYC_S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+    KYC_S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    /** Non-AWS S3 endpoint: Supabase Storage, MinIO, LocalStack. */
+    KYC_S3_ENDPOINT: z.string().url().optional(),
+    KYC_S3_FORCE_PATH_STYLE: z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
-    /** KMS key for server-side encryption. Falls back to SSE-S3 when unset. */
-    KYC_S3_KMS_KEY_ID: z.string().optional(),
+    /**
+     * How objects are encrypted at rest.
+     * - sse-s3: S3-managed keys, requested per upload (AWS default).
+     * - sse-kms: a customer-managed KMS key; requires KYC_S3_KMS_KEY_ID.
+     * - provider-managed: the store encrypts everything itself and rejects
+     *   the SSE request headers (Supabase Storage), so none are sent.
+     */
+    KYC_S3_ENCRYPTION: z.enum(['sse-s3', 'sse-kms', 'provider-managed']).default('sse-s3'),
+    KYC_S3_KMS_KEY_ID: z.string().min(1).optional(),
 
     KYC_UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
     KYC_DOWNLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(120),
@@ -69,6 +85,34 @@ export const envSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Set SUPABASE_JWT_SECRET (HS256) or SUPABASE_URL (JWKS) to verify tokens.',
+      });
+    }
+
+    // Half a credential pair would fall back to the default chain for the
+    // other half, which on a serverless host is someone else's identity.
+    if (Boolean(env.KYC_S3_ACCESS_KEY_ID) !== Boolean(env.KYC_S3_SECRET_ACCESS_KEY)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['KYC_S3_ACCESS_KEY_ID'],
+        message: 'Set both KYC_S3_ACCESS_KEY_ID and KYC_S3_SECRET_ACCESS_KEY, or neither.',
+      });
+    }
+
+    if (env.KYC_S3_ENCRYPTION === 'sse-kms' && !env.KYC_S3_KMS_KEY_ID) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['KYC_S3_KMS_KEY_ID'],
+        message: 'KYC_S3_ENCRYPTION=sse-kms requires KYC_S3_KMS_KEY_ID.',
+      });
+    }
+
+    // A key that is set but unused is a misconfiguration someone believes is
+    // protecting their data — fail loudly rather than ignore it.
+    if (env.KYC_S3_KMS_KEY_ID && env.KYC_S3_ENCRYPTION !== 'sse-kms') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['KYC_S3_ENCRYPTION'],
+        message: 'KYC_S3_KMS_KEY_ID is set but KYC_S3_ENCRYPTION is not sse-kms.',
       });
     }
   });
