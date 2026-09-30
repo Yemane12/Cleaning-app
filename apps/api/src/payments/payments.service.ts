@@ -309,10 +309,11 @@ export class PaymentsService {
       });
     } catch (error) {
       const definite = error instanceof ChapaError && error.definite;
-      // Refused outright: safe to try again with a new reference. Unknown
+      // Refused outright: no transfer exists under this reference, so it is
+      // dropped and the next attempt has nothing to look up first. Unknown
       // outcome: stays SENT, so the next attempt looks this one up first.
       return definite
-        ? this.failPayout(payment, messageOf(error))
+        ? this.failPayout(payment, `${messageOf(error)} (${reference})`, { refused: true })
         : this.prisma.payment.update({
             where: { id: payment.id },
             data: { payoutError: `Transfer outcome unknown: ${messageOf(error)}` },
@@ -342,6 +343,12 @@ export class PaymentsService {
         },
       });
     }
+
+    this.logger.log(
+      transfer
+        ? `Transfer ${payment.payoutReference}: Chapa reports ${transfer.status || '(no status)'}`
+        : `Transfer ${payment.payoutReference}: not found at Chapa`,
+    );
 
     if (transfer?.status === 'success') {
       return this.prisma.payment.update({
@@ -401,12 +408,26 @@ export class PaymentsService {
     };
   }
 
-  private async failPayout(payment: Payment, reason: string): Promise<Payment> {
+  /**
+   * `refused`: Chapa turned the transfer request down, so no transfer exists
+   * under its reference. The reference is then cleared: a reference is kept
+   * only while a transfer might exist under it, to be looked up before any
+   * new attempt.
+   */
+  private async failPayout(
+    payment: Payment,
+    reason: string,
+    { refused = false }: { refused?: boolean } = {},
+  ): Promise<Payment> {
     this.logger.error(`Payout for payment ${payment.id} failed: ${reason}`);
 
     return this.prisma.payment.update({
       where: { id: payment.id },
-      data: { payoutStatus: PayoutStatus.FAILED, payoutError: reason },
+      data: {
+        payoutStatus: PayoutStatus.FAILED,
+        payoutError: reason,
+        ...(refused ? { payoutReference: null } : {}),
+      },
     });
   }
 

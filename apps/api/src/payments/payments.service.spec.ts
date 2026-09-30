@@ -427,7 +427,42 @@ describe('PaymentsService', () => {
       const result = await service.payOut('pay-1');
 
       expect(result.payoutStatus).toBe(PayoutStatus.FAILED);
-      expect(result.payoutError).toBe('Invalid account number');
+      expect(result.payoutError).toBe('Invalid account number (po-BK-7Q2ZK4-1)');
+      // Refused, so no transfer exists under it: nothing to look up later.
+      expect(result.payoutReference).toBeNull();
+    });
+
+    it('retries a refusal straight away, with nothing to look up first', async () => {
+      chapa.transfer.mockRejectedValueOnce(new ChapaError('Invalid account number', 400));
+      await service.payOut('pay-1');
+
+      const result = await service.payOut('pay-1');
+
+      expect(chapa.verifyTransfer).not.toHaveBeenCalled();
+      expect(chapa.transfer).toHaveBeenLastCalledWith(
+        expect.objectContaining({ reference: 'po-BK-7Q2ZK4-2' }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ payoutStatus: PayoutStatus.SENT, payoutAttempts: 2 }),
+      );
+    });
+
+    // What happened live to a refusal recorded before references were
+    // cleared: Chapa's lookup answered without a status. Unreadable is
+    // treated as possibly in flight, so nothing is ever sent twice.
+    it('never sends again while a lookup answer is unreadable', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.FAILED,
+        payoutReference: 'po-e65c06d1-2a6e-4924-a8ad-c8ffa7e1eeb9-1',
+        payoutAttempts: 1,
+      };
+      chapa.verifyTransfer.mockResolvedValue({ status: '', reference: stored.payoutReference });
+
+      const result = await service.payOut('pay-1');
+
+      expect(chapa.transfer).not.toHaveBeenCalled();
+      expect(result.payoutStatus).toBe(PayoutStatus.SENT);
     });
 
     it('keeps an unknown outcome as SENT, so the next attempt looks it up first', async () => {
