@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Payment, PaymentStatus, PayoutStatus, Prisma, RefundStatus } from '@prisma/client';
 import { Env } from '../config/env.validation';
 import { PrismaService } from '../prisma/prisma.service';
-import { ChapaClient, ChapaError, ChapaTransaction } from './chapa.client';
+import { ChapaClient, ChapaError, ChapaTransaction, isFailedStatus } from './chapa.client';
 import { messageOf, toHttpError } from './chapa-errors';
 import { FeePolicy, Settlement } from './payment-math';
 
@@ -280,8 +280,10 @@ export class PaymentsService {
     // Write the new reference *before* asking Chapa, and claim the attempt
     // with a compare-and-set, so a lost response or a concurrent caller
     // leaves a reference to look up rather than a transfer to repeat.
+    // Chapa caps transfer references at 36 characters, so the short booking
+    // reference names it (one payment per booking), not the payment's UUID.
     const attempt = payment.payoutAttempts + 1;
-    const reference = `po-${payment.id}-${attempt}`;
+    const reference = `po-${booking.reference}-${attempt}`;
     const claimed = await this.prisma.payment.updateMany({
       where: { id: payment.id, payoutAttempts: payment.payoutAttempts },
       data: {
@@ -349,7 +351,7 @@ export class PaymentsService {
     }
 
     // Chapa never received it, or received and rejected it: a new attempt is safe.
-    if (!transfer || transfer.status === 'failed' || transfer.status === 'cancelled') {
+    if (!transfer || isFailedStatus(transfer.status)) {
       return payment.payoutStatus === PayoutStatus.FAILED
         ? payment
         : this.failPayout(
@@ -464,10 +466,7 @@ export function reconcile(
     };
   }
 
-  if (
-    (transaction.status === 'failed' || transaction.status === 'cancelled') &&
-    payment.status === PaymentStatus.REQUIRES_PAYMENT
-  ) {
+  if (isFailedStatus(transaction.status) && payment.status === PaymentStatus.REQUIRES_PAYMENT) {
     const failureMessage = `Payment ${transaction.status} at Chapa`;
     return failureMessage === payment.failureMessage ? null : { failureMessage };
   }

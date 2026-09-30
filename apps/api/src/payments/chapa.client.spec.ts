@@ -1,4 +1,10 @@
-import { ChapaClient, ChapaError, fromChapaAmount, toChapaAmount } from './chapa.client';
+import {
+  ChapaClient,
+  ChapaError,
+  fromChapaAmount,
+  isFailedStatus,
+  toChapaAmount,
+} from './chapa.client';
 
 /**
  * The real client against a fake `fetch`: what goes over the wire is what is
@@ -256,6 +262,20 @@ describe('ChapaClient', () => {
     it('refuses to send a fractional or negative amount', () => {
       expect(() => toChapaAmount(10.5)).toThrow();
       expect(() => toChapaAmount(-1)).toThrow();
+    });
+  });
+
+  describe('isFailedStatus', () => {
+    it('recognises every way Chapa says a charge or transfer is over', () => {
+      for (const status of ['failed', 'cancelled', 'canceled', 'failed/cancelled', 'Failed']) {
+        expect(isFailedStatus(status)).toBe(true);
+      }
+    });
+
+    it('never mistakes success or an in-flight state for failure', () => {
+      for (const status of ['success', 'pending', '', 'success/failed']) {
+        expect(isFailedStatus(status)).toBe(false);
+      }
     });
   });
 });
