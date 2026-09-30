@@ -16,9 +16,9 @@ const defaults: Record<string, string> = {
   SUPABASE_URL: 'https://project.supabase.co',
   KYC_S3_REGION: 'eu-west-2',
   KYC_S3_BUCKET: 'kyc-documents-test',
-  STRIPE_SECRET_KEY: 'sk_test_placeholder',
-  STRIPE_WEBHOOK_SECRET: 'whsec_placeholder',
-  STRIPE_CONNECT_RETURN_URL: 'https://app.example.test/cleaner/payouts',
+  CHAPA_SECRET_KEY: 'CHASECK_TEST-placeholder',
+  CHAPA_WEBHOOK_SECRET: 'test-webhook-secret-hash',
+  PAYMENT_RETURN_URL: 'https://app.example.test/bookings/paid',
 };
 
 for (const [key, value] of Object.entries(defaults)) {

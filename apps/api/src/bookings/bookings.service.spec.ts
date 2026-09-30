@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -9,8 +8,8 @@ import {
   BookingStatus,
   KycStatus,
   PaymentStatus,
-  PayoutStatus,
   Prisma,
+  RefundStatus,
   ServiceCategory,
   UserRole,
   UserStatus,
@@ -51,7 +50,7 @@ describe('BookingsService', () => {
     baseDurationMinutes: 120,
     basePriceMinor: 4000,
     pricePerHalfHourMinor: 1000,
-    currency: 'GBP',
+    currency: 'ETB',
     active: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -93,13 +92,13 @@ describe('BookingsService', () => {
   const paymentRow = (overrides = {}) => ({
     id: 'pay-1',
     bookingId: 'bk-1',
-    stripePaymentIntentId: 'pi_1',
-    stripeChargeId: 'ch_1',
-    status: PaymentStatus.AUTHORIZED,
+    txRef: 'bk-bk-1',
+    checkoutUrl: null,
+    status: PaymentStatus.PAID,
     amountMinor: 4000,
-    currency: 'GBP',
+    currency: 'ETB',
+    refundStatus: RefundStatus.NONE,
     refundedMinor: 0,
-    payoutStatus: PayoutStatus.NOT_DUE,
     ...overrides,
   });
 
@@ -121,15 +120,14 @@ describe('BookingsService', () => {
   let availability: { isWithinPublishedHours: jest.Mock; hasExceptionOverlapping: jest.Mock };
   let payments: Record<
     | 'feePolicy'
-    | 'openIntent'
-    | 'discardIntent'
-    | 'retrieveIntent'
-    | 'capture'
-    | 'release'
-    | 'refund'
-    | 'recordPayoutDue'
+    | 'openCheckout'
+    | 'sync'
+    | 'syncByTxRef'
+    | 'cancelUnpaid'
+    | 'recordSettlement'
+    | 'sendRefund'
+    | 'retryRefund'
     | 'payOut'
-    | 'syncFromIntent'
     | 'summarize',
     jest.Mock
   >;
@@ -150,7 +148,10 @@ describe('BookingsService', () => {
         create: jest.fn().mockImplementation(({ data }) =>
           Promise.resolve({
             ...data,
-            payment: { ...paymentRow({ status: PaymentStatus.REQUIRES_PAYMENT }) },
+            payment: paymentRow({
+              status: PaymentStatus.REQUIRES_PAYMENT,
+              checkoutUrl: data.payment.create.checkoutUrl,
+            }),
           }),
         ),
         update: jest
@@ -164,7 +165,7 @@ describe('BookingsService', () => {
     };
     services = {
       findBookableOrThrow: jest.fn().mockResolvedValue(service),
-      quote: jest.fn().mockReturnValue({ durationMinutes: 120, priceMinor: 4000, currency: 'GBP' }),
+      quote: jest.fn().mockReturnValue({ durationMinutes: 120, priceMinor: 4000, currency: 'ETB' }),
     };
     availability = {
       isWithinPublishedHours: jest.fn().mockResolvedValue(true),
@@ -172,16 +173,22 @@ describe('BookingsService', () => {
     };
     payments = {
       feePolicy: jest.fn().mockReturnValue({ platformFeeBps: 1500, lateCancellationFeeBps: 5000 }),
-      openIntent: jest.fn().mockResolvedValue({ id: 'pi_1', client_secret: 'pi_1_secret_x' }),
-      discardIntent: jest.fn(),
-      retrieveIntent: jest.fn().mockResolvedValue({ id: 'pi_1', client_secret: 'pi_1_secret_x' }),
-      capture: jest.fn(),
-      release: jest.fn(),
-      refund: jest.fn(),
-      recordPayoutDue: jest.fn(),
+      openCheckout: jest
+        .fn()
+        .mockResolvedValue({ txRef: 'bk-new', checkoutUrl: 'https://checkout.chapa.co/x' }),
+      sync: jest.fn((payment) => Promise.resolve(payment)),
+      syncByTxRef: jest.fn(),
+      cancelUnpaid: jest.fn(),
+      recordSettlement: jest.fn(),
+      sendRefund: jest.fn(),
+      retryRefund: jest.fn(),
       payOut: jest.fn(),
-      syncFromIntent: jest.fn(),
-      summarize: jest.fn((payment, view) => ({ status: payment.status, ...view })),
+      // Mirrors the real one's visibility rules closely enough to test callers.
+      summarize: jest.fn((payment, view) => ({
+        status: payment.status,
+        ...(view.checkout && payment.checkoutUrl ? { checkoutUrl: payment.checkoutUrl } : {}),
+        ...(view.payout ? { payout: {} } : {}),
+      })),
     };
 
     bookings = new BookingsService(
@@ -201,50 +208,45 @@ describe('BookingsService', () => {
           data: expect.objectContaining({
             status: BookingStatus.PENDING_PAYMENT,
             quotedPriceMinor: 4000,
-            currency: 'GBP',
+            currency: 'ETB',
             durationMinutes: 120,
           }),
         }),
       );
     });
 
-    it('opens a card hold for the quote, naming the booking it belongs to', async () => {
+    it('opens a Chapa checkout for the quote, naming the booking it belongs to', async () => {
       await bookings.request(customer, dto);
 
       const data = prisma.booking.create.mock.calls[0][0].data;
-      expect(payments.openIntent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          bookingId: data.id,
-          reference: data.reference,
-          amountMinor: 4000,
-          currency: 'GBP',
-        }),
-      );
-      expect(data.payment.create).toEqual({
-        stripePaymentIntentId: 'pi_1',
+      expect(payments.openCheckout).toHaveBeenCalledWith({
+        bookingId: data.id,
+        reference: data.reference,
         amountMinor: 4000,
-        currency: 'GBP',
+        currency: 'ETB',
+        email: customer.email,
+      });
+      expect(data.payment.create).toEqual({
+        txRef: 'bk-new',
+        checkoutUrl: 'https://checkout.chapa.co/x',
+        amountMinor: 4000,
+        currency: 'ETB',
       });
     });
 
-    it('hands the customer the client secret to complete payment with', async () => {
+    it('hands the customer the checkout page to pay on', async () => {
       const result = await bookings.request(customer, dto);
 
-      expect(result.payment).toEqual(expect.objectContaining({ clientSecret: 'pi_1_secret_x' }));
+      expect(result.payment).toEqual(
+        expect.objectContaining({ checkoutUrl: 'https://checkout.chapa.co/x' }),
+      );
     });
 
-    it('cancels the hold if the booking cannot be saved', async () => {
-      prisma.booking.create.mockRejectedValue(new Error('db down'));
-
-      await expect(bookings.request(customer, dto)).rejects.toThrow('db down');
-      expect(payments.discardIntent).toHaveBeenCalledWith('pi_1');
-    });
-
-    it('opens no hold for a request that fails validation', async () => {
+    it('opens no checkout for a request that fails validation', async () => {
       prisma.booking.findFirst.mockResolvedValue({ id: 'other' });
 
       await expect(bookings.request(customer, dto)).rejects.toThrow(/already taken/);
-      expect(payments.openIntent).not.toHaveBeenCalled();
+      expect(payments.openCheckout).not.toHaveBeenCalled();
     });
 
     it('derives the end from the start and duration', async () => {
@@ -279,7 +281,7 @@ describe('BookingsService', () => {
       prisma.user.findUnique.mockResolvedValue(bookable({ payoutsEnabled: false }));
 
       await expect(bookings.request(customer, dto)).rejects.toThrow(/setting up payouts/);
-      expect(payments.openIntent).not.toHaveBeenCalled();
+      expect(payments.openCheckout).not.toHaveBeenCalled();
     });
 
     it('refuses to book a suspended cleaner', async () => {
@@ -446,64 +448,58 @@ describe('BookingsService', () => {
     });
   });
 
-  describe('taking payment on acceptance', () => {
+  describe('accepting', () => {
     beforeEach(() => prisma.booking.findUnique.mockResolvedValue(stored()));
 
-    it('captures inside the acceptance transaction, after the booking update', async () => {
-      const order: string[] = [];
-      prisma.booking.update.mockImplementation(async ({ data }) => {
-        order.push('update');
-        return stored({ status: data.status });
-      });
-      payments.capture.mockImplementation(async () => order.push('capture'));
-
+    it('moves no money — the customer already paid', async () => {
       await bookings.accept(cleaner, 'bk-1');
 
-      // After the update: an overlap caught by the exclusion constraint
-      // fails the transaction before the card is ever charged.
-      expect(order).toEqual(['update', 'capture']);
-      expect(payments.capture).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'pay-1' }),
-        prisma,
-      );
+      expect(payments.recordSettlement).not.toHaveBeenCalled();
+      expect(payments.sendRefund).not.toHaveBeenCalled();
+      expect(payments.payOut).not.toHaveBeenCalled();
     });
 
-    it('fails the acceptance when the capture fails', async () => {
-      payments.capture.mockRejectedValue(new BadGatewayException('provider down'));
-
-      await expect(bookings.accept(cleaner, 'bk-1')).rejects.toBeInstanceOf(BadGatewayException);
-    });
-
-    it('refuses to accept before the card is authorised', async () => {
+    it('refuses to accept a booking that is not paid', async () => {
       prisma.payment.findUnique.mockResolvedValue(
         paymentRow({ status: PaymentStatus.REQUIRES_PAYMENT }),
       );
 
-      await expect(bookings.accept(cleaner, 'bk-1')).rejects.toThrow(/not authorised/);
+      await expect(bookings.accept(cleaner, 'bk-1')).rejects.toThrow(/not paid/);
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     it('refuses a legacy booking that has no payment at all', async () => {
       prisma.payment.findUnique.mockResolvedValue(null);
 
-      await expect(bookings.accept(cleaner, 'bk-1')).rejects.toThrow(/not authorised/);
+      await expect(bookings.accept(cleaner, 'bk-1')).rejects.toThrow(/not paid/);
     });
   });
 
   describe('money when a booking ends early', () => {
-    it('releases the hold when the cleaner declines', async () => {
+    it('refunds in full when the cleaner declines — recorded in the transaction, sent after', async () => {
       prisma.booking.findUnique.mockResolvedValue(stored());
+      const order: string[] = [];
+      prisma.bookingEvent.create.mockImplementation(async () => order.push('event'));
+      payments.recordSettlement.mockImplementation(async () => order.push('record'));
+      prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => {
+        const result = await fn(prisma);
+        order.push('commit');
+        return result;
+      });
+      payments.sendRefund.mockImplementation(async () => order.push('send'));
 
       await bookings.decline(cleaner, 'bk-1', {});
 
-      expect(payments.release).toHaveBeenCalledWith(
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'pay-1' }),
-        'abandoned',
+        { refundMinor: 4000, payoutMinor: 0, platformFeeMinor: 0 },
+        prisma,
       );
-      expect(payments.refund).not.toHaveBeenCalled();
+      expect(order).toEqual(['event', 'record', 'commit', 'send']);
+      expect(payments.payOut).not.toHaveBeenCalled();
     });
 
-    it('releases the hold when the customer abandons an unpaid request', async () => {
+    it('just marks an unpaid checkout cancelled when the customer abandons it', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.PENDING_PAYMENT }),
       );
@@ -513,16 +509,21 @@ describe('BookingsService', () => {
 
       await bookings.cancel(customer, 'bk-1', {});
 
-      expect(payments.release).toHaveBeenCalledWith(expect.anything(), 'requested_by_customer');
+      expect(payments.cancelUnpaid).toHaveBeenCalledWith(expect.anything(), prisma);
+      expect(payments.sendRefund).not.toHaveBeenCalled();
     });
 
     it('refunds in full when the customer cancels with notice', async () => {
       prisma.booking.findUnique.mockResolvedValue(stored({ status: BookingStatus.ACCEPTED }));
-      prisma.payment.findUnique.mockResolvedValue(paymentRow({ status: PaymentStatus.CAPTURED }));
 
       await bookings.cancel(customer, 'bk-1', {});
 
-      expect(payments.refund).toHaveBeenCalledWith(expect.anything(), 4000, prisma);
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
+        expect.anything(),
+        { refundMinor: 4000, payoutMinor: 0, platformFeeMinor: 0 },
+        prisma,
+      );
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-1');
       expect(payments.payOut).not.toHaveBeenCalled();
     });
 
@@ -530,17 +531,16 @@ describe('BookingsService', () => {
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.ACCEPTED, scheduledStart: SOON }),
       );
-      prisma.payment.findUnique.mockResolvedValue(paymentRow({ status: PaymentStatus.CAPTURED }));
 
       await bookings.cancel(customer, 'bk-1', {});
 
-      // £40: £20 back to the customer; of the £20 kept, 15% (£3) to the platform.
-      expect(payments.refund).toHaveBeenCalledWith(expect.anything(), 2000, prisma);
-      expect(payments.recordPayoutDue).toHaveBeenCalledWith(
+      // 40 birr: 20 back to the customer; of the 20 kept, 15% (3) to the platform.
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
         expect.anything(),
         { refundMinor: 2000, payoutMinor: 1700, platformFeeMinor: 300 },
         prisma,
       );
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-1');
       expect(payments.payOut).toHaveBeenCalledWith('pay-1');
     });
 
@@ -548,24 +548,25 @@ describe('BookingsService', () => {
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.ACCEPTED, scheduledStart: SOON }),
       );
-      prisma.payment.findUnique.mockResolvedValue(paymentRow({ status: PaymentStatus.CAPTURED }));
 
       await bookings.cancel(cleaner, 'bk-1', {});
 
-      expect(payments.refund).toHaveBeenCalledWith(expect.anything(), 4000, prisma);
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
+        expect.anything(),
+        { refundMinor: 4000, payoutMinor: 0, platformFeeMinor: 0 },
+        prisma,
+      );
       expect(payments.payOut).not.toHaveBeenCalled();
     });
 
-    it('does not cancel if the refund fails — and pays nobody', async () => {
+    it('sends no money if the cancellation does not commit', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.ACCEPTED, scheduledStart: SOON }),
       );
-      prisma.payment.findUnique.mockResolvedValue(paymentRow({ status: PaymentStatus.CAPTURED }));
-      payments.refund.mockRejectedValue(new BadGatewayException('provider down'));
+      prisma.booking.update.mockRejectedValue(new Error('db down'));
 
-      await expect(bookings.cancel(customer, 'bk-1', {})).rejects.toBeInstanceOf(
-        BadGatewayException,
-      );
+      await expect(bookings.cancel(customer, 'bk-1', {})).rejects.toThrow('db down');
+      expect(payments.sendRefund).not.toHaveBeenCalled();
       expect(payments.payOut).not.toHaveBeenCalled();
     });
   });
@@ -573,14 +574,13 @@ describe('BookingsService', () => {
   describe('paying the cleaner on completion', () => {
     beforeEach(() => {
       prisma.booking.findUnique.mockResolvedValue(stored({ status: BookingStatus.IN_PROGRESS }));
-      prisma.payment.findUnique.mockResolvedValue(paymentRow({ status: PaymentStatus.CAPTURED }));
     });
 
     it('records the payout with the completion, then sends it', async () => {
       await bookings.complete(cleaner, 'bk-1');
 
-      // £40 less 15% platform fee.
-      expect(payments.recordPayoutDue).toHaveBeenCalledWith(
+      // 40 birr less the 15% platform fee.
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
         expect.anything(),
         { refundMinor: 0, payoutMinor: 3400, platformFeeMinor: 600 },
         prisma,
@@ -596,14 +596,13 @@ describe('BookingsService', () => {
     });
   });
 
-  describe('reacting to Stripe', () => {
-    it('moves a booking to REQUESTED once its card is authorised', async () => {
-      payments.syncFromIntent.mockResolvedValue(paymentRow({ status: PaymentStatus.AUTHORIZED }));
+  describe('reacting to Chapa', () => {
+    it('moves a booking to REQUESTED once its payment is confirmed', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.PENDING_PAYMENT }),
       );
 
-      await bookings.onPaymentIntent({ id: 'pi_1' } as never);
+      await bookings.onPaymentUpdated(paymentRow() as never);
 
       expect(prisma.booking.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -615,33 +614,41 @@ describe('BookingsService', () => {
       );
     });
 
-    it('expires a request whose hold lapsed before anyone accepted it', async () => {
-      payments.syncFromIntent.mockResolvedValue(paymentRow({ status: PaymentStatus.CANCELED }));
-      prisma.booking.findUnique.mockResolvedValue(stored());
-
-      await bookings.onPaymentIntent({ id: 'pi_1' } as never);
-
-      expect(prisma.booking.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ status: BookingStatus.EXPIRED }),
-        }),
-      );
-    });
-
-    it('releases a hold that was authorised after its booking was cancelled', async () => {
-      payments.syncFromIntent.mockResolvedValue(paymentRow({ status: PaymentStatus.AUTHORIZED }));
+    it('refunds money that arrives after the booking was cancelled', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.CANCELLED_BY_CUSTOMER }),
       );
 
-      await bookings.onPaymentIntent({ id: 'pi_1' } as never);
+      await bookings.onPaymentUpdated(paymentRow() as never);
 
-      expect(payments.release).toHaveBeenCalled();
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
+        expect.anything(),
+        { refundMinor: 4000, payoutMinor: 0, platformFeeMinor: 0 },
+        prisma,
+      );
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-1');
       expect(prisma.booking.update).not.toHaveBeenCalled();
     });
 
+    it('never refunds the same late payment twice', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        stored({ status: BookingStatus.CANCELLED_BY_CUSTOMER }),
+      );
+
+      await bookings.onPaymentUpdated(paymentRow({ refundStatus: RefundStatus.PENDING }) as never);
+
+      expect(payments.recordSettlement).not.toHaveBeenCalled();
+    });
+
+    it('does nothing for a payment that is not confirmed', async () => {
+      await bookings.onPaymentUpdated(
+        paymentRow({ status: PaymentStatus.REQUIRES_PAYMENT }) as never,
+      );
+
+      expect(prisma.booking.findUnique).not.toHaveBeenCalled();
+    });
+
     it('treats losing a race to a concurrent change as done', async () => {
-      payments.syncFromIntent.mockResolvedValue(paymentRow({ status: PaymentStatus.AUTHORIZED }));
       prisma.booking.findUnique.mockResolvedValue(
         stored({ status: BookingStatus.PENDING_PAYMENT }),
       );
@@ -649,15 +656,30 @@ describe('BookingsService', () => {
         new Prisma.PrismaClientKnownRequestError('gone', { code: 'P2025', clientVersion: 'x' }),
       );
 
-      await expect(bookings.onPaymentIntent({ id: 'pi_1' } as never)).resolves.toBeUndefined();
+      await expect(bookings.onPaymentUpdated(paymentRow() as never)).resolves.toBeUndefined();
     });
 
-    it('ignores an intent that is not one of ours', async () => {
-      payments.syncFromIntent.mockResolvedValue(null);
+    it('ignores a reference that is not one of ours', async () => {
+      payments.syncByTxRef.mockResolvedValue(null);
 
-      await bookings.onPaymentIntent({ id: 'pi_other' } as never);
+      await bookings.onPaymentNudge('someone-else');
 
       expect(prisma.booking.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('lets the customer pull the payment state instead of waiting for Chapa', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        stored({ status: BookingStatus.PENDING_PAYMENT }),
+      );
+
+      await bookings.syncPayment(customer, 'bk-1').catch(() => undefined);
+
+      expect(payments.sync).toHaveBeenCalledWith(expect.objectContaining({ id: 'pay-1' }));
+      expect(prisma.booking.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: BookingStatus.REQUESTED }),
+        }),
+      );
     });
   });
 
@@ -665,27 +687,25 @@ describe('BookingsService', () => {
     it("never shows the customer the cleaner's payout", async () => {
       prisma.booking.findUnique.mockResolvedValue(stored());
 
-      await bookings.getPayment(customer, 'bk-1');
+      const summary = await bookings.getPayment(customer, 'bk-1');
 
-      expect(payments.summarize).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ payout: false }),
-      );
+      expect(summary).not.toHaveProperty('payout');
     });
 
-    it('gives only the paying customer the client secret, only while unpaid', async () => {
+    it('gives only the paying customer the checkout link', async () => {
       prisma.booking.findUnique.mockResolvedValue(stored());
       prisma.payment.findUnique.mockResolvedValue(
-        paymentRow({ status: PaymentStatus.REQUIRES_PAYMENT }),
+        paymentRow({
+          status: PaymentStatus.REQUIRES_PAYMENT,
+          checkoutUrl: 'https://checkout.chapa.co/x',
+        }),
       );
 
       const mine = await bookings.getPayment(customer, 'bk-1');
-      expect(mine).toEqual(expect.objectContaining({ clientSecret: 'pi_1_secret_x' }));
+      expect(mine).toEqual(expect.objectContaining({ checkoutUrl: 'https://checkout.chapa.co/x' }));
 
-      payments.retrieveIntent.mockClear();
       const theirs = await bookings.getPayment(cleaner, 'bk-1');
-      expect(theirs.clientSecret).toBeUndefined();
-      expect(payments.retrieveIntent).not.toHaveBeenCalled();
+      expect(theirs).not.toHaveProperty('checkoutUrl');
     });
 
     it('keeps unpaid requests out of the cleaner list, even when filtering by status', async () => {

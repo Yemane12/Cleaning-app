@@ -99,20 +99,24 @@ model CleanerProfile {
   bio        String?
   hourlyRate Decimal? @db.Decimal(10, 2)
 
-  /// IANA zone the cleaner's availability windows are expressed in.
-  /// Stored per cleaner so a London rule of 09:00 stays 09:00 across a DST shift.
-  timeZone String @default("Europe/London")
+  /// IANA zone the cleaner's availability windows are expressed in. Stored
+  /// per cleaner so a rule of 09:00 stays 09:00 local wherever DST applies.
+  timeZone String @default("Africa/Addis_Ababa")
 
   kycStatus          KycStatus @default(NOT_STARTED)
   kycSubmittedAt     DateTime?
   kycReviewedAt      DateTime?
   kycRejectionReason String?
 
-  /// Stripe Connect account that receives this cleaner's payouts.
-  stripeAccountId String? @unique
-  /// Cached from Stripe (transfers capability active and payouts enabled).
-  /// A cleaner who cannot be paid cannot be booked, like one without KYC.
-  payoutsEnabled  Boolean @default(false)
+  /// Where payouts go: a bank account or mobile wallet (telebirr, M-Pesa…)
+  /// from Chapa's bank list. Set by the cleaner; every change is audited.
+  payoutBankCode      Int?
+  payoutBankName      String?
+  payoutAccountNumber String?
+  payoutAccountName   String?
+  /// A payout account is on file. A cleaner who cannot be paid cannot be
+  /// booked, like one without KYC.
+  payoutsEnabled      Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -181,7 +185,7 @@ enum ServiceCategory {
   CARPET_CLEAN
 }
 
-/// A bookable service. Prices are integer minor units (pence) — money is never
+/// A bookable service. Prices are integer minor units (santim) — money is never
 /// stored as a float, and never as a Decimal we would then do JS arithmetic on.
 model Service {
   id          String          @id @default(uuid()) @db.Uuid
@@ -195,7 +199,7 @@ model Service {
   basePriceMinor        Int
   /// Added for each 30 minutes beyond baseDurationMinutes.
   pricePerHalfHourMinor Int
-  currency              String @default("GBP")
+  currency              String @default("ETB")
 
   /// Retired services stay readable so historic bookings still resolve.
   active Boolean @default(true)
@@ -220,7 +224,7 @@ model Address {
   line2     String?
   city      String
   postcode  String
-  country   String  @default("GB")
+  country   String  @default("ET")
   notes     String?
   isDefault Boolean @default(false)
 
@@ -272,8 +276,8 @@ model AvailabilityException {
 }
 
 enum BookingStatus {
-  /// Created, but the customer's card is not yet authorised. Invisible to
-  /// the cleaner until it is.
+  /// Created, but the customer has not paid yet. Invisible to the cleaner
+  /// until they have.
   PENDING_PAYMENT
   REQUESTED
   ACCEPTED
@@ -282,8 +286,6 @@ enum BookingStatus {
   COMPLETED
   CANCELLED_BY_CUSTOMER
   CANCELLED_BY_CLEANER
-  /// The card authorisation lapsed before the cleaner accepted.
-  EXPIRED
 }
 
 model Booking {
@@ -351,78 +353,88 @@ model BookingEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Epic 3: Payments
+// Epic 3: Payments (Chapa)
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum PaymentStatus {
-  /// PaymentIntent created; the customer has not authorised a card yet.
+  /// Checkout opened; the customer has not paid.
   REQUIRES_PAYMENT
-  /// Funds held on the card (manual capture), not yet taken.
-  AUTHORIZED
-  /// Taken — the cleaner accepted.
-  CAPTURED
-  /// Hold released, or never completed. No money moved.
+  /// Chapa confirmed the money arrived.
+  PAID
+  /// The booking ended before payment. Should the customer pay anyway, the
+  /// payment moves to PAID and is refunded.
   CANCELED
   PARTIALLY_REFUNDED
   REFUNDED
 }
 
+enum RefundStatus {
+  NONE
+  /// Decided and recorded; not yet sent to Chapa.
+  PENDING
+  DONE
+  /// The refund failed or its outcome is unknown. Chapa offers no way to look
+  /// a refund up, so a person checks the Chapa dashboard before any retry —
+  /// the API never re-sends a refund on its own.
+  NEEDS_REVIEW
+}
+
 enum PayoutStatus {
   /// Nothing is owed to the cleaner (yet, or at all).
   NOT_DUE
-  /// Owed, transfer not yet made — waiting on a retry.
+  /// Owed; no transfer made yet.
   PENDING
+  /// Transfer accepted by Chapa, not yet confirmed as delivered.
+  SENT
   PAID
   FAILED
 }
 
 /// The money side of one booking. Amounts are integer minor units, like
-/// every other price in this schema. Stripe is the source of truth for the
-/// card; this row is what the API decided and what it has confirmed.
+/// every other price here; Chapa's decimal strings are converted at its edge.
 model Payment {
   id        String  @id @default(uuid()) @db.Uuid
   bookingId String  @unique @db.Uuid
   booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
 
-  stripePaymentIntentId String  @unique
-  stripeChargeId        String?
+  /// Our reference for the charge at Chapa (their `tx_ref`).
+  txRef          String  @unique
+  /// Chapa's own reference, once paid.
+  chapaReference String?
+  /// Hosted checkout page, while unpaid.
+  checkoutUrl    String?
 
   status         PaymentStatus @default(REQUIRES_PAYMENT)
   amountMinor    Int
   currency       String
-  refundedMinor  Int           @default(0)
-  /// Last decline or error Stripe reported, kept for support.
+  /// telebirr, cbebirr, mpesa, card… as reported by Chapa.
+  method         String?
+  /// Last problem reported for this payment, kept for support.
   failureMessage String?
+  paidAt         DateTime?
+  canceledAt     DateTime?
 
-  authorizedAt DateTime?
-  capturedAt   DateTime?
-  canceledAt   DateTime?
+  refundStatus   RefundStatus @default(NONE)
+  refundDueMinor Int?
+  refundedMinor  Int          @default(0)
+  refundError    String?
+  refundedAt     DateTime?
 
   payoutStatus     PayoutStatus @default(NOT_DUE)
   payoutMinor      Int?
   platformFeeMinor Int?
-  stripeTransferId String?      @unique
-  payoutError      String?
-  /// Failed transfer attempts. Part of the transfer's idempotency key: Stripe
-  /// replays a failed request's error for 24h, so a retry needs a new key.
+  /// Reference of the latest transfer attempt, written *before* the transfer
+  /// is requested, so an attempt whose response was lost can be looked up.
+  payoutReference  String?      @unique
   payoutAttempts   Int          @default(0)
+  payoutError      String?
   paidOutAt        DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
+  @@index([refundStatus])
   @@index([payoutStatus])
   @@map("payments")
-}
-
-/// Webhook events already handled. Stripe delivers at least once, so a
-/// redelivery is recognised by its evt_… id and acknowledged without
-/// being applied twice.
-model StripeEvent {
-  id         String   @id
-  type       String
-  receivedAt DateTime @default(now())
-
-  @@map("stripe_events")
 }

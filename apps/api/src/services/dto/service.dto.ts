@@ -35,7 +35,7 @@ export class CreateServiceDto {
   @Max(600)
   baseDurationMinutes!: number;
 
-  /** Minor units (pence). */
+  /** Minor units (santim). */
   @IsInt()
   @Min(0)
   basePriceMinor!: number;

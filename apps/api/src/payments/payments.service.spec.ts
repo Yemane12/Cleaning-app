@@ -1,401 +1,436 @@
 import { BadGatewayException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Payment, PaymentStatus, PayoutStatus } from '@prisma/client';
-import Stripe from 'stripe';
+import { Payment, PaymentStatus, PayoutStatus, RefundStatus } from '@prisma/client';
 import { Env } from '../config/env.validation';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChapaClient, ChapaError } from './chapa.client';
 import { PaymentsService, reconcile } from './payments.service';
 
 describe('PaymentsService', () => {
   const payment = (overrides: Partial<Payment> = {}): Payment => ({
     id: 'pay-1',
     bookingId: 'bk-1',
-    stripePaymentIntentId: 'pi_1',
-    stripeChargeId: 'ch_1',
-    status: PaymentStatus.AUTHORIZED,
-    amountMinor: 4000,
-    currency: 'GBP',
-    refundedMinor: 0,
+    txRef: 'bk-bk-1',
+    chapaReference: null,
+    checkoutUrl: 'https://checkout.chapa.co/x',
+    status: PaymentStatus.REQUIRES_PAYMENT,
+    amountMinor: 400_000,
+    currency: 'ETB',
+    method: null,
     failureMessage: null,
-    authorizedAt: null,
-    capturedAt: null,
+    paidAt: null,
     canceledAt: null,
+    refundStatus: RefundStatus.NONE,
+    refundDueMinor: null,
+    refundedMinor: 0,
+    refundError: null,
+    refundedAt: null,
     payoutStatus: PayoutStatus.NOT_DUE,
     payoutMinor: null,
     platformFeeMinor: null,
-    stripeTransferId: null,
-    payoutError: null,
+    payoutReference: null,
     payoutAttempts: 0,
+    payoutError: null,
     paidOutAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
   });
 
-  const stripeError = (type: string, message = 'boom') =>
-    Object.assign(new Error(message), { type });
+  const paid = (tx: Partial<{ amountMinor: number; currency: string }> = {}) => ({
+    status: 'success',
+    amountMinor: 400_000,
+    currency: 'ETB',
+    reference: 'APx1',
+    method: 'telebirr',
+    ...tx,
+  });
 
-  let stripe: {
-    paymentIntents: Record<'create' | 'capture' | 'cancel' | 'retrieve', jest.Mock>;
-    refunds: Record<'list' | 'create', jest.Mock>;
-    transfers: Record<'list' | 'create', jest.Mock>;
-  };
+  let chapa: Record<
+    'initialize' | 'verify' | 'refund' | 'transfer' | 'verifyTransfer' | 'banks',
+    jest.Mock
+  >;
   let prisma: {
-    payment: { findUnique: jest.Mock; update: jest.Mock };
+    payment: { findUnique: jest.Mock; update: jest.Mock; updateMany: jest.Mock };
+    booking: { findUniqueOrThrow: jest.Mock };
     cleanerProfile: { findUnique: jest.Mock };
   };
-  let tx: { payment: { update: jest.Mock } };
+  let stored: Payment;
   let service: PaymentsService;
 
   beforeEach(() => {
-    stripe = {
-      paymentIntents: {
-        create: jest.fn(),
-        capture: jest
-          .fn()
-          .mockResolvedValue({ id: 'pi_1', status: 'succeeded', latest_charge: 'ch_9' }),
-        cancel: jest.fn().mockResolvedValue({ id: 'pi_1', status: 'canceled' }),
-        retrieve: jest.fn(),
-      },
-      refunds: {
-        list: jest.fn().mockResolvedValue({ data: [] }),
-        create: jest
-          .fn()
-          .mockImplementation(({ amount }) => Promise.resolve({ id: 're_1', amount })),
-      },
-      transfers: {
-        list: jest.fn().mockResolvedValue({ data: [] }),
-        create: jest.fn().mockResolvedValue({ id: 'tr_1' }),
-      },
+    stored = payment();
+    chapa = {
+      initialize: jest.fn().mockResolvedValue({ checkoutUrl: 'https://checkout.chapa.co/x' }),
+      verify: jest.fn(),
+      refund: jest.fn().mockResolvedValue(undefined),
+      transfer: jest.fn().mockResolvedValue(undefined),
+      verifyTransfer: jest.fn().mockResolvedValue(null),
+      banks: jest.fn(),
     };
+    // A tiny in-memory row, so compare-and-set claims behave like the database.
     prisma = {
       payment: {
-        findUnique: jest.fn(),
-        update: jest
-          .fn()
-          .mockImplementation(({ data }) => Promise.resolve({ ...payment(), ...data })),
+        findUnique: jest.fn(() => Promise.resolve({ ...stored })),
+        update: jest.fn(({ data }) => {
+          stored = { ...stored, ...data };
+          return Promise.resolve({ ...stored });
+        }),
+        updateMany: jest.fn(({ where, data }) => {
+          const matches = Object.entries(where).every(
+            ([key, value]) => key === 'id' || stored[key as keyof Payment] === value,
+          );
+          if (matches) {
+            stored = { ...stored, ...data };
+          }
+          return Promise.resolve({ count: matches ? 1 : 0 });
+        }),
       },
-      cleanerProfile: { findUnique: jest.fn().mockResolvedValue({ stripeAccountId: 'acct_1' }) },
+      booking: {
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ reference: 'BK-1', cleanerId: 'cleaner-1' }),
+      },
+      cleanerProfile: {
+        findUnique: jest.fn().mockResolvedValue({
+          payoutBankCode: 855,
+          payoutAccountNumber: '0912345678',
+          payoutAccountName: 'Abebe Kebede',
+        }),
+      },
     };
-    tx = { payment: { update: jest.fn().mockImplementation(({ data }) => Promise.resolve(data)) } };
 
-    const env: Partial<Env> = { PLATFORM_FEE_BPS: 1500, LATE_CANCELLATION_FEE_BPS: 5000 };
+    const env: Partial<Env> = {
+      PLATFORM_FEE_BPS: 1500,
+      LATE_CANCELLATION_FEE_BPS: 5000,
+      PAYMENT_RETURN_URL: 'https://app.example.test/paid',
+      PUBLIC_API_URL: 'https://api.example.test/',
+    };
     service = new PaymentsService(
-      stripe as unknown as Stripe,
+      chapa as unknown as ChapaClient,
       prisma as unknown as PrismaService,
       { get: (k: keyof Env) => env[k] } as unknown as ConfigService<Env, true>,
     );
   });
 
-  describe('openIntent', () => {
-    it('opens a manual-capture card hold tied to the booking', async () => {
-      await service.openIntent({
-        bookingId: 'bk-1',
+  describe('openCheckout', () => {
+    it('opens a checkout keyed to the booking, with a callback into this API', async () => {
+      const result = await service.openCheckout({
+        bookingId: 'b1',
         reference: 'BK-1',
-        amountMinor: 4000,
-        currency: 'GBP',
-        customerId: 'c',
-        cleanerId: 'k',
+        amountMinor: 400_000,
+        currency: 'ETB',
+        email: 'c@example.com',
       });
 
-      expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
+      expect(chapa.initialize).toHaveBeenCalledWith(
         expect.objectContaining({
-          amount: 4000,
-          currency: 'gbp',
-          capture_method: 'manual',
-          transfer_group: 'bk-1',
-          metadata: expect.objectContaining({ bookingId: 'bk-1' }),
+          txRef: 'bk-b1',
+          amountMinor: 400_000,
+          currency: 'ETB',
+          returnUrl: 'https://app.example.test/paid',
+          callbackUrl: 'https://api.example.test/api/v1/payments/chapa/callback',
+          title: 'Cleaning',
         }),
-        { idempotencyKey: 'booking-bk-1-intent' },
       );
+      expect(result).toEqual({ txRef: 'bk-b1', checkoutUrl: 'https://checkout.chapa.co/x' });
     });
 
-    it('reports an unreachable Stripe as a 502', async () => {
-      stripe.paymentIntents.create.mockRejectedValue(stripeError('StripeConnectionError'));
+    it('reports an unreachable Chapa as a 502', async () => {
+      chapa.initialize.mockRejectedValue(new ChapaError('timeout', 0));
 
       await expect(
-        service.openIntent({
-          bookingId: 'bk-1',
+        service.openCheckout({
+          bookingId: 'b1',
           reference: 'BK-1',
-          amountMinor: 4000,
-          currency: 'GBP',
-          customerId: 'c',
-          cleanerId: 'k',
+          amountMinor: 1,
+          currency: 'ETB',
+          email: 'c@example.com',
         }),
       ).rejects.toBeInstanceOf(BadGatewayException);
     });
   });
 
-  describe('capture', () => {
-    it('captures and records the charge through the transaction', async () => {
-      await service.capture(payment(), tx as never);
-
-      expect(stripe.paymentIntents.capture).toHaveBeenCalledWith('pi_1');
-      expect(tx.payment.update).toHaveBeenCalledWith(
+  describe('reconcile', () => {
+    it('marks a verified payment PAID and drops the checkout link', () => {
+      expect(reconcile(payment(), paid())).toEqual(
         expect.objectContaining({
-          data: expect.objectContaining({ status: PaymentStatus.CAPTURED, stripeChargeId: 'ch_9' }),
+          status: PaymentStatus.PAID,
+          chapaReference: 'APx1',
+          method: 'telebirr',
+          checkoutUrl: null,
         }),
       );
-      expect(prisma.payment.update).not.toHaveBeenCalled();
     });
 
-    it('adopts a capture that already happened instead of failing', async () => {
-      stripe.paymentIntents.capture.mockRejectedValue(stripeError('StripeInvalidRequestError'));
-      stripe.paymentIntents.retrieve.mockResolvedValue({
-        id: 'pi_1',
-        status: 'succeeded',
-        latest_charge: 'ch_9',
+    it('never counts a payment of the wrong amount or currency', () => {
+      expect(reconcile(payment(), paid({ amountMinor: 100 }))).toEqual({
+        failureMessage: expect.stringMatching(/Needs review/),
       });
+      expect(reconcile(payment(), paid({ currency: 'USD' }))).toEqual({
+        failureMessage: expect.stringMatching(/Needs review/),
+      });
+    });
 
-      await expect(service.capture(payment(), tx as never)).resolves.toEqual(
-        expect.objectContaining({ status: PaymentStatus.CAPTURED }),
+    // A customer can finish checkout after cancelling; that money must be
+    // noticed so it can be returned.
+    it('notices money that arrives after the booking was cancelled', () => {
+      expect(reconcile(payment({ status: PaymentStatus.CANCELED }), paid())).toEqual(
+        expect.objectContaining({ status: PaymentStatus.PAID }),
       );
     });
 
-    it('fails when the hold has lapsed', async () => {
-      stripe.paymentIntents.capture.mockRejectedValue(stripeError('StripeInvalidRequestError'));
-      stripe.paymentIntents.retrieve.mockResolvedValue({ id: 'pi_1', status: 'canceled' });
-
-      await expect(service.capture(payment(), tx as never)).rejects.toBeInstanceOf(
-        ConflictException,
-      );
-      expect(tx.payment.update).not.toHaveBeenCalled();
+    it('only moves forward', () => {
+      expect(reconcile(payment({ status: PaymentStatus.PAID }), paid())).toBeNull();
+      expect(reconcile(payment({ status: PaymentStatus.REFUNDED }), paid())).toBeNull();
+      expect(reconcile(payment(), null)).toBeNull();
+      expect(reconcile(payment(), { ...paid(), status: 'pending' })).toBeNull();
     });
 
-    it('never charges a payment that was not authorised', async () => {
-      await expect(
-        service.capture(payment({ status: PaymentStatus.REQUIRES_PAYMENT }), tx as never),
-      ).rejects.toBeInstanceOf(ConflictException);
-      expect(stripe.paymentIntents.capture).not.toHaveBeenCalled();
+    it('records a failed attempt without changing status', () => {
+      expect(reconcile(payment(), { ...paid(), status: 'failed' })).toEqual({
+        failureMessage: 'Payment failed at Chapa',
+      });
     });
   });
 
-  describe('refund', () => {
-    const captured = () => payment({ status: PaymentStatus.CAPTURED });
-
-    it('refunds the requested amount and marks a part refund as such', async () => {
-      await service.refund(captured(), 2000, tx as never);
-
-      expect(stripe.refunds.create).toHaveBeenCalledWith(
-        expect.objectContaining({ payment_intent: 'pi_1', amount: 2000 }),
-      );
-      expect(tx.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { refundedMinor: 2000, status: PaymentStatus.PARTIALLY_REFUNDED },
-        }),
-      );
-    });
-
-    it('marks a full refund as REFUNDED', async () => {
-      await service.refund(captured(), 4000, tx as never);
-
-      expect(tx.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { refundedMinor: 4000, status: PaymentStatus.REFUNDED } }),
-      );
-    });
-
-    // With a 50% late fee, a second refund of the remaining half would fit
-    // under the charge — so a retry must adopt the first, not repeat it.
-    it('adopts an earlier refund instead of refunding twice', async () => {
-      stripe.refunds.list.mockResolvedValue({ data: [{ amount: 2000, status: 'succeeded' }] });
-
-      await service.refund(captured(), 2000, tx as never);
-
-      expect(stripe.refunds.create).not.toHaveBeenCalled();
-      expect(tx.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ refundedMinor: 2000 }) }),
-      );
-    });
-
-    it('ignores failed earlier refunds', async () => {
-      stripe.refunds.list.mockResolvedValue({ data: [{ amount: 2000, status: 'failed' }] });
-
-      await service.refund(captured(), 2000, tx as never);
-
-      expect(stripe.refunds.create).toHaveBeenCalled();
-    });
-
-    it('does nothing for a zero refund', async () => {
-      await service.refund(captured(), 0, tx as never);
-
-      expect(stripe.refunds.list).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('release', () => {
-    it('cancels an open hold', async () => {
-      await service.release(payment(), 'abandoned');
-
-      expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith('pi_1', {
-        cancellation_reason: 'abandoned',
+  describe('sendRefund', () => {
+    beforeEach(() => {
+      stored = payment({
+        status: PaymentStatus.PAID,
+        refundStatus: RefundStatus.PENDING,
+        refundDueMinor: 200_000,
       });
-      expect(prisma.payment.update).toHaveBeenCalledWith(
+    });
+
+    it('sends the recorded amount and marks a part refund as such', async () => {
+      const result = await service.sendRefund('pay-1');
+
+      expect(chapa.refund).toHaveBeenCalledWith('bk-bk-1', 200_000, {
+        reason: 'Booking cancelled',
+        reference: 'rf-pay-1',
+      });
+      expect(result).toEqual(
         expect.objectContaining({
-          data: expect.objectContaining({ status: PaymentStatus.CANCELED }),
+          refundStatus: RefundStatus.DONE,
+          refundedMinor: 200_000,
+          status: PaymentStatus.PARTIALLY_REFUNDED,
         }),
       );
     });
 
-    it('leaves the row alone if Stripe could not release it', async () => {
-      stripe.paymentIntents.cancel.mockRejectedValue(stripeError('StripeAPIError'));
-      stripe.paymentIntents.retrieve.mockResolvedValue({ id: 'pi_1', status: 'requires_capture' });
+    it('marks a full refund REFUNDED', async () => {
+      stored = { ...stored, refundDueMinor: 400_000 };
 
-      await service.release(payment(), 'abandoned');
-
-      expect(prisma.payment.update).not.toHaveBeenCalled();
+      await expect(service.sendRefund('pay-1')).resolves.toEqual(
+        expect.objectContaining({ status: PaymentStatus.REFUNDED }),
+      );
     });
 
-    it('never touches captured money', async () => {
-      await service.release(payment({ status: PaymentStatus.CAPTURED }), 'abandoned');
+    // Chapa cannot look a refund up, so an unknown outcome must stop for a person.
+    it('stops for review when the outcome is unknown — and never resends on its own', async () => {
+      chapa.refund.mockRejectedValue(new ChapaError('socket hang up', 0));
 
-      expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+      const result = await service.sendRefund('pay-1');
+      expect(result.refundStatus).toBe(RefundStatus.NEEDS_REVIEW);
+      expect(result.refundError).toMatch(/check the Chapa dashboard/);
+
+      await service.sendRefund('pay-1');
+      expect(chapa.refund).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps Chapa's reason when it refuses", async () => {
+      chapa.refund.mockRejectedValue(new ChapaError('Insufficient balance', 400));
+
+      const result = await service.sendRefund('pay-1');
+      expect(result.refundError).toBe('Chapa refused the refund: Insufficient balance');
+    });
+
+    it('claims the refund before calling Chapa, so a concurrent caller cannot send it too', async () => {
+      await Promise.all([service.sendRefund('pay-1'), service.sendRefund('pay-1')]);
+
+      expect(chapa.refund).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets an admin resend only a refund awaiting review', async () => {
+      await expect(service.retryRefund('pay-1')).rejects.toBeInstanceOf(ConflictException);
+
+      stored = { ...stored, refundStatus: RefundStatus.NEEDS_REVIEW };
+      await expect(service.retryRefund('pay-1')).resolves.toEqual(
+        expect.objectContaining({ refundStatus: RefundStatus.DONE }),
+      );
     });
   });
 
   describe('payOut', () => {
-    const owed = (overrides: Partial<Payment> = {}) => ({
-      ...payment({
-        status: PaymentStatus.CAPTURED,
+    beforeEach(() => {
+      stored = payment({
+        status: PaymentStatus.PAID,
         payoutStatus: PayoutStatus.PENDING,
-        payoutMinor: 3400,
-        ...overrides,
-      }),
-      booking: { reference: 'BK-1', cleanerId: 'cleaner-1' },
+        payoutMinor: 340_000,
+      });
     });
 
-    it('transfers what is owed, drawing on the booking charge', async () => {
-      prisma.payment.findUnique.mockResolvedValue(owed());
+    it("transfers what is owed to the cleaner's account under a fresh reference", async () => {
+      const result = await service.payOut('pay-1');
 
-      await service.payOut('pay-1');
-
-      expect(stripe.transfers.create).toHaveBeenCalledWith(
+      expect(chapa.transfer).toHaveBeenCalledWith({
+        reference: 'po-pay-1-1',
+        amountMinor: 340_000,
+        currency: 'ETB',
+        bankCode: 855,
+        accountNumber: '0912345678',
+        accountName: 'Abebe Kebede',
+      });
+      expect(result).toEqual(
         expect.objectContaining({
-          amount: 3400,
-          currency: 'gbp',
-          destination: 'acct_1',
-          source_transaction: 'ch_1',
-          transfer_group: 'bk-1',
-        }),
-        { idempotencyKey: 'payment-pay-1-payout-0' },
-      );
-      expect(prisma.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            payoutStatus: PayoutStatus.PAID,
-            stripeTransferId: 'tr_1',
-          }),
+          payoutStatus: PayoutStatus.SENT,
+          payoutReference: 'po-pay-1-1',
+          payoutAttempts: 1,
         }),
       );
     });
 
-    it('adopts an earlier transfer instead of paying twice', async () => {
-      prisma.payment.findUnique.mockResolvedValue(owed({ payoutStatus: PayoutStatus.FAILED }));
-      stripe.transfers.list.mockResolvedValue({
-        data: [{ id: 'tr_old', destination: 'acct_1', reversed: false }],
+    it('writes the reference before asking Chapa', async () => {
+      chapa.transfer.mockImplementation(() => {
+        expect(stored.payoutReference).toBe('po-pay-1-1');
+        return Promise.resolve();
       });
 
       await service.payOut('pay-1');
-
-      expect(stripe.transfers.create).not.toHaveBeenCalled();
-      expect(prisma.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ stripeTransferId: 'tr_old' }) }),
-      );
     });
 
-    it('records a failure for retry, with a fresh key next time', async () => {
-      prisma.payment.findUnique.mockResolvedValue(owed({ payoutAttempts: 2 }));
-      stripe.transfers.create.mockRejectedValue(
-        stripeError('StripeInvalidRequestError', 'no capability'),
-      );
+    it('adopts an earlier transfer that went through instead of paying twice', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.SENT,
+        payoutReference: 'po-pay-1-1',
+        payoutAttempts: 1,
+      };
+      chapa.verifyTransfer.mockResolvedValue({ status: 'success', reference: 'po-pay-1-1' });
+
+      const result = await service.payOut('pay-1');
+
+      expect(chapa.transfer).not.toHaveBeenCalled();
+      expect(result.payoutStatus).toBe(PayoutStatus.PAID);
+    });
+
+    it('leaves a transfer that is still in flight alone', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.SENT,
+        payoutReference: 'po-pay-1-1',
+        payoutAttempts: 1,
+      };
+      chapa.verifyTransfer.mockResolvedValue({ status: 'pending', reference: 'po-pay-1-1' });
 
       await service.payOut('pay-1');
 
-      expect(stripe.transfers.create.mock.calls[0][1]).toEqual({
-        idempotencyKey: 'payment-pay-1-payout-2',
+      expect(chapa.transfer).not.toHaveBeenCalled();
+    });
+
+    it('makes a new attempt when the earlier one never reached Chapa', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.SENT,
+        payoutReference: 'po-pay-1-1',
+        payoutAttempts: 1,
+      };
+      chapa.verifyTransfer.mockResolvedValue(null);
+
+      await service.payOut('pay-1');
+
+      expect(chapa.transfer).toHaveBeenCalledWith(
+        expect.objectContaining({ reference: 'po-pay-1-2' }),
+      );
+    });
+
+    it('attempts nothing new while the last attempt cannot be checked', async () => {
+      stored = {
+        ...stored,
+        payoutStatus: PayoutStatus.SENT,
+        payoutReference: 'po-pay-1-1',
+        payoutAttempts: 1,
+      };
+      chapa.verifyTransfer.mockRejectedValue(new ChapaError('timeout', 0));
+
+      const result = await service.payOut('pay-1');
+
+      expect(chapa.transfer).not.toHaveBeenCalled();
+      expect(result.payoutStatus).toBe(PayoutStatus.SENT);
+      expect(result.payoutError).toMatch(/Could not check transfer/);
+    });
+
+    it('records a refusal as FAILED, ready for a retry', async () => {
+      chapa.transfer.mockRejectedValue(new ChapaError('Invalid account number', 400));
+
+      const result = await service.payOut('pay-1');
+
+      expect(result.payoutStatus).toBe(PayoutStatus.FAILED);
+      expect(result.payoutError).toBe('Invalid account number');
+    });
+
+    it('keeps an unknown outcome as SENT, so the next attempt looks it up first', async () => {
+      chapa.transfer.mockRejectedValue(new ChapaError('socket hang up', 0));
+
+      const result = await service.payOut('pay-1');
+
+      expect(result.payoutStatus).toBe(PayoutStatus.SENT);
+      expect(result.payoutError).toMatch(/outcome unknown/);
+    });
+
+    it('fails without calling Chapa when the cleaner has no payout account', async () => {
+      prisma.cleanerProfile.findUnique.mockResolvedValue({
+        payoutBankCode: null,
+        payoutAccountNumber: null,
+        payoutAccountName: null,
       });
-      expect(prisma.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: {
-            payoutStatus: PayoutStatus.FAILED,
-            payoutError: 'no capability',
-            payoutAttempts: { increment: 1 },
-          },
-        }),
-      );
+
+      const result = await service.payOut('pay-1');
+
+      expect(chapa.transfer).not.toHaveBeenCalled();
+      expect(result.payoutStatus).toBe(PayoutStatus.FAILED);
     });
 
-    it('fails without calling Stripe when the cleaner has no payout account', async () => {
-      prisma.payment.findUnique.mockResolvedValue(owed());
-      prisma.cleanerProfile.findUnique.mockResolvedValue({ stripeAccountId: null });
+    it('claims each attempt, so concurrent callers cannot both transfer', async () => {
+      await Promise.all([service.payOut('pay-1'), service.payOut('pay-1')]);
+
+      expect(chapa.transfer).toHaveBeenCalledTimes(1);
+    });
+
+    it('never pays out once paid', async () => {
+      stored = { ...stored, payoutStatus: PayoutStatus.PAID };
 
       await service.payOut('pay-1');
 
-      expect(stripe.transfers.create).not.toHaveBeenCalled();
-      expect(prisma.payment.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ payoutStatus: PayoutStatus.FAILED }),
-        }),
-      );
-    });
-
-    it('never pays out twice once paid', async () => {
-      prisma.payment.findUnique.mockResolvedValue(owed({ payoutStatus: PayoutStatus.PAID }));
-
-      await service.payOut('pay-1');
-
-      expect(stripe.transfers.list).not.toHaveBeenCalled();
-      expect(stripe.transfers.create).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('reconcile', () => {
-    const intent = (status: string, extra: object = {}) =>
-      ({ id: 'pi_1', status, latest_charge: 'ch_1', ...extra }) as unknown as Stripe.PaymentIntent;
-
-    it('marks an authorised card', () => {
-      expect(
-        reconcile(payment({ status: PaymentStatus.REQUIRES_PAYMENT }), intent('requires_capture')),
-      ).toEqual(
-        expect.objectContaining({ status: PaymentStatus.AUTHORIZED, stripeChargeId: 'ch_1' }),
-      );
-    });
-
-    it('never moves backwards on a late event', () => {
-      expect(
-        reconcile(payment({ status: PaymentStatus.CAPTURED }), intent('requires_capture')),
-      ).toBeNull();
-      expect(reconcile(payment({ status: PaymentStatus.CAPTURED }), intent('canceled'))).toBeNull();
-      expect(
-        reconcile(payment({ status: PaymentStatus.REFUNDED }), intent('succeeded')),
-      ).toBeNull();
-    });
-
-    it('records a lapsed or cancelled hold', () => {
-      expect(reconcile(payment(), intent('canceled'))).toEqual(
-        expect.objectContaining({ status: PaymentStatus.CANCELED }),
-      );
-    });
-
-    it('keeps the decline message for a failed attempt, without changing status', () => {
-      expect(
-        reconcile(
-          payment({ status: PaymentStatus.REQUIRES_PAYMENT }),
-          intent('requires_payment_method', {
-            last_payment_error: { message: 'Your card was declined.' },
-          }),
-        ),
-      ).toEqual({ failureMessage: 'Your card was declined.' });
+      expect(chapa.verifyTransfer).not.toHaveBeenCalled();
+      expect(chapa.transfer).not.toHaveBeenCalled();
     });
   });
 
   describe('summarize', () => {
-    it("shows the cleaner's side only when asked", () => {
-      expect(service.summarize(payment(), { payout: false })).not.toHaveProperty('payout');
-      expect(service.summarize(payment(), { payout: true })).toHaveProperty('payout');
+    it('shows the checkout link only when asked and only while unpaid', () => {
+      expect(service.summarize(payment(), { payout: false, checkout: true }).checkoutUrl).toBe(
+        'https://checkout.chapa.co/x',
+      );
+      expect(service.summarize(payment(), { payout: false, checkout: false })).not.toHaveProperty(
+        'checkoutUrl',
+      );
+      expect(
+        service.summarize(payment({ status: PaymentStatus.PAID }), {
+          payout: false,
+          checkout: true,
+        }),
+      ).not.toHaveProperty('checkoutUrl');
     });
 
-    it('omits the client secret unless one is given', () => {
-      expect(service.summarize(payment(), { payout: false })).not.toHaveProperty('clientSecret');
+    it("shows the cleaner's side only when asked", () => {
+      expect(service.summarize(payment(), { payout: false, checkout: false })).not.toHaveProperty(
+        'payout',
+      );
+      expect(service.summarize(payment(), { payout: true, checkout: false })).toHaveProperty(
+        'payout',
+      );
     });
   });
 });

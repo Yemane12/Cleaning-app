@@ -6,9 +6,9 @@ describe('validateEnv — KYC storage', () => {
     SUPABASE_URL: 'https://project.supabase.co',
     KYC_S3_REGION: 'eu-west-1',
     KYC_S3_BUCKET: 'kyc-documents',
-    STRIPE_SECRET_KEY: 'sk_test_placeholder',
-    STRIPE_WEBHOOK_SECRET: 'whsec_placeholder',
-    STRIPE_CONNECT_RETURN_URL: 'https://app.example.test/cleaner/payouts',
+    CHAPA_SECRET_KEY: 'CHASECK_TEST-placeholder',
+    CHAPA_WEBHOOK_SECRET: 'test-webhook-secret-hash',
+    PAYMENT_RETURN_URL: 'https://app.example.test/bookings/paid',
   };
 
   it('accepts the minimal configuration and defaults to sse-s3', () => {
@@ -62,36 +62,32 @@ describe('validateEnv — payments', () => {
     SUPABASE_URL: 'https://project.supabase.co',
     KYC_S3_REGION: 'eu-west-1',
     KYC_S3_BUCKET: 'kyc-documents',
-    STRIPE_SECRET_KEY: 'sk_test_placeholder',
-    STRIPE_WEBHOOK_SECRET: 'whsec_placeholder',
-    STRIPE_CONNECT_RETURN_URL: 'https://app.example.test/cleaner/payouts',
+    CHAPA_SECRET_KEY: 'CHASECK_TEST-placeholder',
+    CHAPA_WEBHOOK_SECRET: 'test-webhook-secret-hash',
+    PAYMENT_RETURN_URL: 'https://app.example.test/bookings/paid',
   };
 
-  it('defaults to a 15% platform fee, 50% late-cancellation fee and GB payouts', () => {
+  it('defaults to a 15% platform fee and a 50% late-cancellation fee', () => {
     const env = validateEnv(base);
 
     expect(env.PLATFORM_FEE_BPS).toBe(1500);
     expect(env.LATE_CANCELLATION_FEE_BPS).toBe(5000);
-    expect(env.STRIPE_CONNECT_COUNTRY).toBe('GB');
   });
 
-  // The publishable key is the one most easily pasted by mistake: it is on
-  // the same dashboard page and looks alike.
-  it('rejects a publishable key where the secret key belongs', () => {
-    expect(() => validateEnv({ ...base, STRIPE_SECRET_KEY: 'pk_test_abc' })).toThrow(
-      /STRIPE_SECRET_KEY/,
+  it('accepts both test and live Chapa keys', () => {
+    expect(() => validateEnv({ ...base, CHAPA_SECRET_KEY: 'CHASECK-live-abc' })).not.toThrow();
+  });
+
+  // Chapa's dashboard shows the public key next to the secret one.
+  it('rejects a Chapa public key where the secret key belongs', () => {
+    expect(() => validateEnv({ ...base, CHAPA_SECRET_KEY: 'CHAPUBK_TEST-abc' })).toThrow(
+      /CHAPA_SECRET_KEY/,
     );
   });
 
-  it('accepts several webhook secrets, one per Stripe destination', () => {
-    const env = validateEnv({ ...base, STRIPE_WEBHOOK_SECRET: 'whsec_a, whsec_b' });
-
-    expect(env.STRIPE_WEBHOOK_SECRET).toEqual(['whsec_a', 'whsec_b']);
-  });
-
-  it('rejects a webhook secret that is not a signing secret', () => {
-    expect(() => validateEnv({ ...base, STRIPE_WEBHOOK_SECRET: 'whsec_a,sk_test_b' })).toThrow(
-      /STRIPE_WEBHOOK_SECRET/,
+  it('rejects a guessable webhook secret', () => {
+    expect(() => validateEnv({ ...base, CHAPA_WEBHOOK_SECRET: 'secret' })).toThrow(
+      /CHAPA_WEBHOOK_SECRET/,
     );
   });
 

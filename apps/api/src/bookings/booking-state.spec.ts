@@ -16,7 +16,7 @@ describe('booking state machine', () => {
   });
 
   it('refuses to skip the middle of the happy path', () => {
-    // An unpaid request can never be accepted — the card is authorised first.
+    // An unpaid request can never be accepted — the customer pays first.
     expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.ACCEPTED)).toBe(false);
     expect(canTransition(BookingStatus.REQUESTED, BookingStatus.IN_PROGRESS)).toBe(false);
     expect(canTransition(BookingStatus.REQUESTED, BookingStatus.COMPLETED)).toBe(false);
@@ -35,7 +35,6 @@ describe('booking state machine', () => {
       BookingStatus.DECLINED,
       BookingStatus.CANCELLED_BY_CUSTOMER,
       BookingStatus.CANCELLED_BY_CLEANER,
-      BookingStatus.EXPIRED,
     ]) {
       expect(isTerminal(status)).toBe(true);
       expect(ALL.filter((to) => canTransition(status, to))).toEqual([]);
@@ -76,13 +75,6 @@ describe('booking state machine', () => {
       false,
     );
     expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.DECLINED)).toBe(false);
-  });
-
-  it('expires only bookings whose payment was never taken', () => {
-    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.EXPIRED)).toBe(true);
-    expect(canTransition(BookingStatus.REQUESTED, BookingStatus.EXPIRED)).toBe(true);
-    // Once accepted the money is captured; a lapsed hold is no longer possible.
-    expect(canTransition(BookingStatus.ACCEPTED, BookingStatus.EXPIRED)).toBe(false);
   });
 
   it('counts exactly the non-terminal statuses as open', () => {

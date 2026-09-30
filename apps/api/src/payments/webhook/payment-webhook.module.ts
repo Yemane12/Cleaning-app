@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { BookingsModule } from '../../bookings/bookings.module';
 import { PaymentsModule } from '../payments.module';
-import { StripeWebhookController } from './stripe-webhook.controller';
-import { StripeWebhookService } from './stripe-webhook.service';
+import { ChapaWebhookController } from './chapa-webhook.controller';
+import { ChapaWebhookService } from './chapa-webhook.service';
 
 /**
  * Separate from PaymentsModule because it needs BookingsModule, which itself
@@ -10,7 +10,7 @@ import { StripeWebhookService } from './stripe-webhook.service';
  */
 @Module({
   imports: [PaymentsModule, BookingsModule],
-  controllers: [StripeWebhookController],
-  providers: [StripeWebhookService],
+  controllers: [ChapaWebhookController],
+  providers: [ChapaWebhookService],
 })
-export class StripeWebhookModule {}
+export class PaymentWebhookModule {}

@@ -2,7 +2,7 @@
  * Every split of a booking's money, as pure integer arithmetic in minor units.
  *
  * Whatever the outcome, what the customer paid is fully accounted for:
- * `refundMinor + payoutMinor + platformFeeMinor === amountMinor`. Stripe's own
+ * `refundMinor + payoutMinor + platformFeeMinor === amountMinor`. Chapa's own
  * processing fee is charged to the platform's balance, so it comes out of the
  * platform's share, never the cleaner's.
  */

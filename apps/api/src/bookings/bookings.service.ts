@@ -14,10 +14,10 @@ import {
   Payment,
   PaymentStatus,
   Prisma,
+  RefundStatus,
   UserRole,
   UserStatus,
 } from '@prisma/client';
-import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service';
 import { AvailabilityService } from '../availability/availability.service';
 import { ServicesService } from '../services/services.service';
@@ -38,12 +38,6 @@ const EXCLUSION_VIOLATION = '23P01';
 
 /** A customer cancelling inside this window is outside the free-cancellation policy. */
 export const FREE_CANCELLATION_HOURS = 24;
-
-/**
- * How long a status change may hold its transaction open. Capture and refund
- * run inside it, so it covers a Stripe round trip and one SDK retry.
- */
-const TRANSACTION_TIMEOUT_MS = 20_000;
 
 type MoneyStep = (tx: Prisma.TransactionClient) => Promise<unknown>;
 
@@ -66,10 +60,10 @@ export class BookingsService {
    * active, the slot sits inside published hours, and nothing already
    * occupies it.
    *
-   * The booking starts as PENDING_PAYMENT with a card hold opened for the
-   * quote; the response carries the `clientSecret` the customer's browser
-   * completes it with. It reaches the cleaner as REQUESTED only once Stripe
-   * reports the card authorised.
+   * The booking starts as PENDING_PAYMENT, with a Chapa checkout opened for
+   * the quote; the response carries its `checkoutUrl`. The customer pays
+   * there (telebirr, CBE Birr, M-Pesa, card), and the booking reaches the
+   * cleaner as REQUESTED only once Chapa confirms the money arrived.
    *
    * A request does not reserve the slot — several customers may request the
    * same one, and whoever the cleaner accepts first gets it.
@@ -115,68 +109,60 @@ export class BookingsService {
 
     const quote = this.services.quote(service, dto.durationMinutes);
 
-    // The id is chosen up front so the card hold can name its booking before
+    // The id is chosen up front so the checkout can name its booking before
     // the booking row exists; the row and its payment are then written together.
+    // Should that write fail, the unpaid checkout simply lapses.
     const bookingId = randomUUID();
     const reference = generateReference();
 
-    const intent = await this.payments.openIntent({
+    const checkout = await this.payments.openCheckout({
       bookingId,
       reference,
       amountMinor: quote.priceMinor,
       currency: quote.currency,
-      customerId: customer.id,
-      cleanerId: dto.cleanerId,
+      email: customer.email,
     });
 
-    let booking: Booking & { payment: Payment | null };
-    try {
-      booking = await this.prisma.booking.create({
-        data: {
-          id: bookingId,
-          reference,
-          customerId: customer.id,
-          cleanerId: dto.cleanerId,
-          serviceId: service.id,
-          addressId: address.id,
-          status: BookingStatus.PENDING_PAYMENT,
-          scheduledStart: start,
-          scheduledEnd: end,
-          durationMinutes: dto.durationMinutes,
-          quotedPriceMinor: quote.priceMinor,
-          currency: quote.currency,
-          customerNotes: dto.customerNotes,
-          events: {
-            create: { toStatus: BookingStatus.PENDING_PAYMENT, actorId: customer.id },
-          },
-          payment: {
-            create: {
-              stripePaymentIntentId: intent.id,
-              amountMinor: quote.priceMinor,
-              currency: quote.currency,
-            },
+    const booking = await this.prisma.booking.create({
+      data: {
+        id: bookingId,
+        reference,
+        customerId: customer.id,
+        cleanerId: dto.cleanerId,
+        serviceId: service.id,
+        addressId: address.id,
+        status: BookingStatus.PENDING_PAYMENT,
+        scheduledStart: start,
+        scheduledEnd: end,
+        durationMinutes: dto.durationMinutes,
+        quotedPriceMinor: quote.priceMinor,
+        currency: quote.currency,
+        customerNotes: dto.customerNotes,
+        events: {
+          create: { toStatus: BookingStatus.PENDING_PAYMENT, actorId: customer.id },
+        },
+        payment: {
+          create: {
+            txRef: checkout.txRef,
+            checkoutUrl: checkout.checkoutUrl,
+            amountMinor: quote.priceMinor,
+            currency: quote.currency,
           },
         },
-        include: { payment: true },
-      });
-    } catch (error) {
-      await this.payments.discardIntent(intent.id);
-      throw error;
-    }
+      },
+      include: { payment: true },
+    });
 
     this.logger.log(`Booking ${booking.reference} created by ${customer.id}, awaiting payment`);
 
     const { payment, ...rest } = booking;
     return {
       ...rest,
-      payment: this.payments.summarize(payment!, {
-        payout: false,
-        clientSecret: intent.client_secret ?? undefined,
-      }),
+      payment: this.payments.summarize(payment!, { payout: false, checkout: true }),
     };
   }
 
-  /** Accepting takes the customer's money: the capture commits with the acceptance or not at all. */
+  /** Only a paid request can be accepted; the money is already held by the platform. */
   async accept(cleaner: AuthenticatedUser, bookingId: string): Promise<Booking> {
     const booking = await this.getVisibleOrThrow(cleaner, bookingId);
 
@@ -192,23 +178,13 @@ export class BookingsService {
 
     const payment = await this.findPayment(booking.id);
 
-    // CAPTURED too: an earlier accept can have captured at Stripe and then
-    // failed to commit. capture() adopts that rather than charging again.
-    if (
-      !payment ||
-      (payment.status !== PaymentStatus.AUTHORIZED && payment.status !== PaymentStatus.CAPTURED)
-    ) {
-      throw new ConflictException("The customer's payment is not authorised");
+    if (payment?.status !== PaymentStatus.PAID) {
+      throw new ConflictException('The customer has not paid for this booking');
     }
 
-    return this.transition(
-      booking,
-      BookingStatus.ACCEPTED,
-      cleaner.id,
-      { acceptedAt: new Date() },
-      undefined,
-      (tx) => this.payments.capture(payment, tx),
-    );
+    return this.transition(booking, BookingStatus.ACCEPTED, cleaner.id, {
+      acceptedAt: new Date(),
+    });
   }
 
   async decline(
@@ -254,7 +230,7 @@ export class BookingsService {
 
     const payment = await this.findPayment(booking.id);
     const settlement =
-      payment?.status === PaymentStatus.CAPTURED
+      payment?.status === PaymentStatus.PAID
         ? settleCompleted(payment.amountMinor, this.payments.feePolicy())
         : null;
 
@@ -265,7 +241,7 @@ export class BookingsService {
       { completedAt: new Date() },
       undefined,
       payment && settlement
-        ? (tx) => this.payments.recordPayoutDue(payment, settlement, tx)
+        ? (tx) => this.payments.recordSettlement(payment, settlement, tx)
         : undefined,
     );
 
@@ -328,7 +304,10 @@ export class BookingsService {
     return {
       ...rest,
       payment: payment
-        ? this.payments.summarize(payment, { payout: this.seesPayout(actor, booking) })
+        ? this.payments.summarize(payment, {
+            payout: this.seesPayout(actor, booking),
+            checkout: booking.customerId === actor.id,
+          })
         : null,
       freeCancellation: this.isWithinFreeCancellation(booking.scheduledStart),
     };
@@ -368,28 +347,23 @@ export class BookingsService {
   }
 
   /**
-   * The booking's payment. The paying customer also gets the `clientSecret`
-   * while payment is outstanding, e.g. to resume after a page reload.
+   * The booking's payment. The paying customer also gets the `checkoutUrl`
+   * while payment is outstanding, e.g. to resume after closing the tab.
    */
   async getPayment(actor: AuthenticatedUser, bookingId: string): Promise<PaymentSummary> {
     const booking = await this.getVisibleOrThrow(actor, bookingId);
     const payment = await this.findPaymentOrThrow(booking.id);
 
-    const clientSecret =
-      booking.customerId === actor.id && payment.status === PaymentStatus.REQUIRES_PAYMENT
-        ? ((await this.payments.retrieveIntent(payment)).client_secret ?? undefined)
-        : undefined;
-
     return this.payments.summarize(payment, {
       payout: this.seesPayout(actor, booking),
-      clientSecret,
+      checkout: booking.customerId === actor.id,
     });
   }
 
   /**
-   * Pulls the payment's state from Stripe instead of waiting for the webhook.
-   * The customer's browser calls this once Stripe.js reports the card
-   * confirmed, so the booking moves on at once even if the webhook is slow.
+   * Asks Chapa about the payment instead of waiting for its webhook. The
+   * customer's app calls this on returning from checkout, so the booking
+   * moves on at once even if the webhook is slow or never comes.
    */
   async syncPayment(customer: AuthenticatedUser, bookingId: string) {
     const booking = await this.getVisibleOrThrow(customer, bookingId);
@@ -399,26 +373,44 @@ export class BookingsService {
     }
 
     const payment = await this.findPaymentOrThrow(booking.id);
-    await this.onPaymentIntent(await this.payments.retrieveIntent(payment));
+    await this.onPaymentUpdated(await this.payments.sync(payment));
 
     return this.findOne(customer, bookingId);
   }
 
-  /** Admin: re-attempts a payout that failed (e.g. the cleaner's account was restricted). */
+  /** Admin: re-attempts a payout that failed (e.g. a wrong account number, since corrected). */
   async retryPayout(bookingId: string): Promise<PaymentSummary> {
     const payment = await this.findPaymentOrThrow(bookingId);
     const updated = await this.payments.payOut(payment.id);
 
-    return this.payments.summarize(updated, { payout: true });
+    return this.payments.summarize(updated, { payout: true, checkout: false });
   }
 
   /**
-   * Reacts to Stripe's view of a booking's payment — from the webhook, or
-   * from syncPayment. Safe to call any number of times, in any order.
+   * Admin: re-sends a refund stuck in NEEDS_REVIEW — only after checking the
+   * Chapa dashboard that the earlier attempt did not go through.
    */
-  async onPaymentIntent(intent: Stripe.PaymentIntent): Promise<void> {
-    const payment = await this.payments.syncFromIntent(intent);
-    if (!payment) {
+  async retryRefund(bookingId: string): Promise<PaymentSummary> {
+    const payment = await this.findPaymentOrThrow(bookingId);
+    const updated = await this.payments.retryRefund(payment.id);
+
+    return this.payments.summarize(updated, { payout: true, checkout: false });
+  }
+
+  /** A webhook or callback named this charge: look it up at Chapa and react. */
+  async onPaymentNudge(txRef: string): Promise<void> {
+    const payment = await this.payments.syncByTxRef(txRef);
+    if (payment) {
+      await this.onPaymentUpdated(payment);
+    }
+  }
+
+  /**
+   * Reacts to a payment's verified state. Safe to call any number of times,
+   * in any order.
+   */
+  async onPaymentUpdated(payment: Payment): Promise<void> {
+    if (payment.status !== PaymentStatus.PAID) {
       return;
     }
 
@@ -427,33 +419,30 @@ export class BookingsService {
       return;
     }
 
-    if (payment.status === PaymentStatus.AUTHORIZED) {
-      if (booking.status === BookingStatus.PENDING_PAYMENT) {
-        await this.systemTransition(booking, BookingStatus.REQUESTED, 'Payment authorised');
-      } else if (isTerminal(booking.status)) {
-        // Cancelled while the card was still being confirmed: nothing will
-        // ever capture this hold, so let it go now rather than in a week.
-        await this.payments.release(payment, 'abandoned');
-      }
+    if (booking.status === BookingStatus.PENDING_PAYMENT) {
+      await this.systemTransition(booking, BookingStatus.REQUESTED, 'Payment received');
+      return;
     }
 
-    if (
-      payment.status === PaymentStatus.CANCELED &&
-      (booking.status === BookingStatus.PENDING_PAYMENT ||
-        booking.status === BookingStatus.REQUESTED)
-    ) {
-      await this.systemTransition(
-        booking,
-        BookingStatus.EXPIRED,
-        'Payment authorisation lapsed or was cancelled',
+    // Paid after the booking had already ended — the customer finished
+    // checkout after cancelling. Nothing will ever use this money: give it back.
+    if (isTerminal(booking.status) && payment.refundStatus === RefundStatus.NONE) {
+      await this.prisma.$transaction((tx) =>
+        this.payments.recordSettlement(
+          payment,
+          { refundMinor: payment.amountMinor, payoutMinor: 0, platformFeeMinor: 0 },
+          tx,
+        ),
       );
+      await this.payments.sendRefund(payment.id);
     }
   }
 
   /**
    * Ends a booking that will not be completed and settles its money with it.
-   * Captured money is refunded (less a late fee, if chargeable) inside the
-   * status change's transaction; an uncaptured hold is released after it.
+   * The refund (less a late fee, if chargeable) and any payout are recorded
+   * inside the status change's transaction, then sent once it commits. An
+   * unpaid checkout is simply marked cancelled.
    */
   private async endUncompleted(
     booking: Booking,
@@ -466,50 +455,40 @@ export class BookingsService {
     this.assertCanTransition(booking, to);
 
     const payment = await this.findPayment(booking.id);
-    const captured = payment?.status === PaymentStatus.CAPTURED;
     const settlement =
-      payment && captured
+      payment?.status === PaymentStatus.PAID
         ? settleCancelled(payment.amountMinor, this.payments.feePolicy(), { chargeable })
         : null;
 
-    const updated = await this.transition(
-      booking,
-      to,
-      actorId,
-      data,
-      reason,
-      payment && settlement
-        ? async (tx) => {
-            await this.payments.refund(payment, settlement.refundMinor, tx);
-            await this.payments.recordPayoutDue(payment, settlement, tx);
-          }
-        : undefined,
-    );
+    const moneyStep: MoneyStep | undefined = !payment
+      ? undefined
+      : settlement
+        ? (tx) => this.payments.recordSettlement(payment, settlement, tx)
+        : (tx) => this.payments.cancelUnpaid(payment, tx);
 
-    if (payment && !captured) {
-      await this.payments.release(
-        payment,
-        to === BookingStatus.CANCELLED_BY_CUSTOMER ? 'requested_by_customer' : 'abandoned',
-      );
-    }
+    const updated = await this.transition(booking, to, actorId, data, reason, moneyStep);
 
-    if (payment && settlement && settlement.payoutMinor > 0) {
-      await this.payments.payOut(payment.id);
+    if (payment && settlement) {
+      if (settlement.refundMinor > 0) {
+        await this.payments.sendRefund(payment.id);
+      }
+      if (settlement.payoutMinor > 0) {
+        await this.payments.payOut(payment.id);
+      }
     }
 
     return updated;
   }
 
   /**
-   * Applies a status change, writing the booking and its audit event together
-   * — and, when given, a money step that must succeed with them. A capture or
-   * refund that fails rolls the status change back; one that succeeds cannot
-   * be separated from it.
+   * Applies a status change, writing the booking, its audit event and — when
+   * given — the money it implies (a refund or payout owed) in one
+   * transaction. Nothing here calls Chapa; what is owed is sent after commit,
+   * so a transaction never waits on the network.
    *
    * The overlap rule is enforced by a Postgres exclusion constraint rather than
    * a prior SELECT, so two cleaners accepting clashing bookings at the same
-   * instant cannot both win. The violation surfaces here as a 409 — before the
-   * money step runs, so a losing accept never charges the customer.
+   * instant cannot both win. The violation surfaces here as a 409.
    */
   private async transition(
     booking: Booking,
@@ -522,31 +501,28 @@ export class BookingsService {
     this.assertCanTransition(booking, to);
 
     try {
-      const updated = await this.prisma.$transaction(
-        async (tx) => {
-          const result = await tx.booking.update({
-            where: { id: booking.id, status: booking.status },
-            data: { ...data, status: to },
-          });
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.booking.update({
+          where: { id: booking.id, status: booking.status },
+          data: { ...data, status: to },
+        });
 
-          await tx.bookingEvent.create({
-            data: {
-              bookingId: booking.id,
-              fromStatus: booking.status,
-              toStatus: to,
-              actorId,
-              reason,
-            },
-          });
+        await tx.bookingEvent.create({
+          data: {
+            bookingId: booking.id,
+            fromStatus: booking.status,
+            toStatus: to,
+            actorId,
+            reason,
+          },
+        });
 
-          if (moneyStep) {
-            await moneyStep(tx);
-          }
+        if (moneyStep) {
+          await moneyStep(tx);
+        }
 
-          return result;
-        },
-        { timeout: TRANSACTION_TIMEOUT_MS },
-      );
+        return result;
+      });
 
       this.logger.log(
         `Booking ${updated.reference}: ${booking.status} → ${to} by ${actorId ?? 'system'}`,

@@ -1,23 +1,21 @@
-import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Payment, PaymentStatus, PayoutStatus, Prisma } from '@prisma/client';
-import Stripe from 'stripe';
+import { Payment, PaymentStatus, PayoutStatus, Prisma, RefundStatus } from '@prisma/client';
 import { Env } from '../config/env.validation';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChapaClient, ChapaError, ChapaTransaction } from './chapa.client';
+import { messageOf, toHttpError } from './chapa-errors';
 import { FeePolicy, Settlement } from './payment-math';
-import { STRIPE } from './stripe.provider';
-import { stripeMessage, toHttpError } from './stripe-errors';
 
-/** An interactive-transaction client — money moves that must commit with a booking change. */
+/** An interactive-transaction client — writes that must commit with a booking change. */
 type Tx = Prisma.TransactionClient;
 
-export interface IntentRequest {
+export interface CheckoutRequest {
   bookingId: string;
   reference: string;
   amountMinor: number;
   currency: string;
-  customerId: string;
-  cleanerId: string;
+  email: string;
 }
 
 /** What a client may see of a payment. */
@@ -25,36 +23,37 @@ export interface PaymentSummary {
   status: PaymentStatus;
   amountMinor: number;
   currency: string;
-  refundedMinor: number;
+  method: string | null;
   failureMessage: string | null;
-  /** For completing payment with Stripe.js: the paying customer only, only while outstanding. */
-  clientSecret?: string;
+  refund: { status: RefundStatus; dueMinor: number | null; refundedMinor: number };
+  /** Chapa's hosted checkout: the paying customer only, only while unpaid. */
+  checkoutUrl?: string;
   /** The cleaner's side: cleaner and admin only. */
-  payout?: {
-    status: PayoutStatus;
-    amountMinor: number | null;
-    paidOutAt: Date | null;
-  };
+  payout?: { status: PayoutStatus; amountMinor: number | null; paidOutAt: Date | null };
 }
-
-const OPEN: readonly PaymentStatus[] = [PaymentStatus.REQUIRES_PAYMENT, PaymentStatus.AUTHORIZED];
 
 /**
  * Every movement of money, and nothing else — booking state belongs to
  * BookingsService, which decides *when* each of these runs.
  *
- * Retry safety: each call carries an idempotency key the SDK generates, which
- * covers a network retry of that one request. Across separate attempts (a
- * cancel retried after a timeout), refunds and transfers first ask Stripe
- * whether an earlier attempt already happened and adopt it instead of
- * repeating it.
+ * Money only ever leaves in two ways, refunds and payouts, and neither may
+ * happen twice:
+ *
+ * - Both are *recorded* inside the database transaction that decided them,
+ *   and *sent* to Chapa after it commits.
+ * - A payout's reference is written before the transfer is requested, and
+ *   Chapa can look a transfer up by it, so an attempt whose outcome was lost
+ *   is found and adopted rather than repeated.
+ * - Chapa has no way to look a refund up. So a refund that does not clearly
+ *   succeed stops at NEEDS_REVIEW, and only a person who has checked the
+ *   Chapa dashboard can send it again. It is never retried automatically.
  */
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
 
   constructor(
-    @Inject(STRIPE) private readonly stripe: Stripe,
+    private readonly chapa: ChapaClient,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
   ) {}
@@ -67,183 +66,84 @@ export class PaymentsService {
   }
 
   /**
-   * Opens a card hold for a booking about to be created. Manual capture: the
-   * card is authorised now and only charged when the cleaner accepts, so a
-   * declined request never costs the customer — or the platform — a refund.
+   * Opens Chapa's hosted checkout for a booking about to be created. The
+   * customer pays up front — mobile money has no card-style hold — and is
+   * refunded in full if the booking never goes ahead.
    */
-  async openIntent(request: IntentRequest): Promise<Stripe.PaymentIntent> {
+  async openCheckout(request: CheckoutRequest): Promise<{ txRef: string; checkoutUrl: string }> {
+    // One charge per booking, so the booking id is the natural reference.
+    const txRef = `bk-${request.bookingId}`;
+    const publicApiUrl = this.config.get('PUBLIC_API_URL', { infer: true });
+
     try {
-      return await this.stripe.paymentIntents.create(
-        {
-          amount: request.amountMinor,
-          currency: request.currency.toLowerCase(),
-          capture_method: 'manual',
-          // Manual capture is a card feature; Apple Pay and Google Pay are cards to Stripe.
-          payment_method_types: ['card'],
-          transfer_group: request.bookingId,
-          description: `Cleaning booking ${request.reference}`,
-          metadata: {
-            bookingId: request.bookingId,
-            bookingReference: request.reference,
-            customerId: request.customerId,
-            cleanerId: request.cleanerId,
-          },
-        },
-        // The booking id is new on every request, so this key only ever
-        // de-duplicates the SDK's own retry of this one call.
-        { idempotencyKey: `booking-${request.bookingId}-intent` },
-      );
+      const { checkoutUrl } = await this.chapa.initialize({
+        txRef,
+        amountMinor: request.amountMinor,
+        currency: request.currency,
+        email: request.email,
+        returnUrl: this.config.get('PAYMENT_RETURN_URL', { infer: true }),
+        callbackUrl: publicApiUrl
+          ? `${publicApiUrl.replace(/\/$/, '')}/api/v1/payments/chapa/callback`
+          : undefined,
+        title: 'Cleaning',
+        description: `Booking ${request.reference}`,
+      });
+
+      return { txRef, checkoutUrl };
     } catch (error) {
       throw toHttpError(error, 'start payment');
     }
   }
 
-  /** Best effort: an intent whose booking was never saved must not linger. */
-  async discardIntent(intentId: string): Promise<void> {
-    try {
-      await this.stripe.paymentIntents.cancel(intentId);
-    } catch (error) {
-      this.logger.warn(
-        `Could not cancel orphaned PaymentIntent ${intentId}: ${stripeMessage(error)}`,
-      );
-    }
-  }
-
-  async retrieveIntent(payment: Payment): Promise<Stripe.PaymentIntent> {
-    try {
-      return await this.stripe.paymentIntents.retrieve(payment.stripePaymentIntentId);
-    } catch (error) {
-      throw toHttpError(error, 'load the payment');
-    }
-  }
-
   /**
-   * Takes the held funds. Runs inside the accept transaction, so a failed
-   * capture rolls the acceptance back with it.
+   * Asks Chapa whether the money arrived and records the answer. Every path
+   * that notices a payment — webhook, Chapa's callback, the customer's sync —
+   * ends here, and none of them is trusted on its own word.
    */
-  async capture(payment: Payment, tx: Tx): Promise<Payment> {
-    if (payment.status === PaymentStatus.CAPTURED) {
-      return payment;
-    }
-
-    if (payment.status !== PaymentStatus.AUTHORIZED) {
-      throw new ConflictException("The customer's payment is not authorised");
-    }
-
-    let intent: Stripe.PaymentIntent;
+  async sync(payment: Payment): Promise<Payment> {
+    let transaction: ChapaTransaction | null;
     try {
-      intent = await this.stripe.paymentIntents.capture(payment.stripePaymentIntentId);
+      transaction = await this.chapa.verify(payment.txRef);
     } catch (error) {
-      // A capture whose response was lost has already happened: adopt it
-      // rather than fail an acceptance that in fact succeeded.
-      const current = await this.retrieveQuietly(payment.stripePaymentIntentId);
-      if (current?.status !== 'succeeded') {
-        throw toHttpError(error, 'take payment');
-      }
-      intent = current;
+      throw toHttpError(error, 'check the payment');
     }
 
-    return tx.payment.update({
+    const data = reconcile(payment, transaction);
+
+    if (data?.failureMessage && data.status === undefined) {
+      this.logger.warn(`Payment ${payment.id}: ${data.failureMessage}`);
+    }
+
+    return data ? this.prisma.payment.update({ where: { id: payment.id }, data }) : payment;
+  }
+
+  async syncByTxRef(txRef: string): Promise<Payment | null> {
+    const payment = await this.prisma.payment.findUnique({ where: { txRef } });
+
+    // Not one of ours — another integration on the same Chapa account.
+    return payment ? this.sync(payment) : null;
+  }
+
+  /** A booking ended before payment. No call to Chapa: an unpaid checkout simply lapses. */
+  async cancelUnpaid(payment: Payment, tx: Tx): Promise<void> {
+    if (payment.status !== PaymentStatus.REQUIRES_PAYMENT) {
+      return;
+    }
+
+    await tx.payment.update({
       where: { id: payment.id },
-      data: {
-        status: PaymentStatus.CAPTURED,
-        capturedAt: new Date(),
-        stripeChargeId: chargeIdOf(intent) ?? payment.stripeChargeId,
-      },
+      data: { status: PaymentStatus.CANCELED, canceledAt: new Date(), checkoutUrl: null },
     });
   }
 
-  /**
-   * Releases a hold that will never be captured. Best effort, after the
-   * booking change has committed: an unreleased hold lapses on its own within
-   * days, and Stripe's `payment_intent.canceled` event reconciles the row.
-   */
-  async release(payment: Payment, reason: 'abandoned' | 'requested_by_customer'): Promise<Payment> {
-    if (!OPEN.includes(payment.status)) {
-      return payment;
-    }
-
-    try {
-      await this.stripe.paymentIntents.cancel(payment.stripePaymentIntentId, {
-        cancellation_reason: reason,
-      });
-    } catch (error) {
-      const current = await this.retrieveQuietly(payment.stripePaymentIntentId);
-      if (current?.status !== 'canceled') {
-        this.logger.warn(
-          `Could not release hold for payment ${payment.id}: ${stripeMessage(error)}`,
-        );
-        return payment;
-      }
-    }
-
-    return this.prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: PaymentStatus.CANCELED, canceledAt: new Date() },
-    });
-  }
-
-  /**
-   * Returns money to the customer. Runs inside the cancellation transaction:
-   * a booking must never read as cancelled while its refund failed.
-   *
-   * A refund from an earlier attempt is adopted, not repeated — with a late
-   * fee of 50%, two refunds of the remaining half would otherwise both fit.
-   */
-  async refund(payment: Payment, amountMinor: number, tx: Tx): Promise<Payment> {
-    if (amountMinor <= 0) {
-      return payment;
-    }
-
-    if (payment.status !== PaymentStatus.CAPTURED) {
-      throw new ConflictException('Only a captured payment can be refunded');
-    }
-
-    let refundedMinor: number;
-    try {
-      const earlier = await this.stripe.refunds.list({
-        payment_intent: payment.stripePaymentIntentId,
-        limit: 100,
-      });
-      refundedMinor = earlier.data
-        .filter((refund) => refund.status !== 'failed' && refund.status !== 'canceled')
-        .reduce((sum, refund) => sum + refund.amount, 0);
-
-      if (refundedMinor === 0) {
-        const refund = await this.stripe.refunds.create({
-          payment_intent: payment.stripePaymentIntentId,
-          amount: amountMinor,
-          reason: 'requested_by_customer',
-          metadata: { bookingId: payment.bookingId },
-        });
-        refundedMinor = refund.amount;
-      } else if (refundedMinor !== amountMinor) {
-        this.logger.warn(
-          `Payment ${payment.id} already had ${refundedMinor} refunded; ` +
-            `adopting that instead of refunding ${amountMinor}`,
-        );
-      }
-    } catch (error) {
-      throw toHttpError(error, 'refund the payment');
-    }
-
-    return tx.payment.update({
-      where: { id: payment.id },
-      data: {
-        refundedMinor,
-        status:
-          refundedMinor >= payment.amountMinor
-            ? PaymentStatus.REFUNDED
-            : PaymentStatus.PARTIALLY_REFUNDED,
-      },
-    });
-  }
-
-  /** Records what the cleaner is owed, inside the transaction that decided it. */
-  async recordPayoutDue(payment: Payment, settlement: Settlement, tx: Tx): Promise<void> {
+  /** Records a refund and a payout, inside the transaction that decided them. */
+  async recordSettlement(payment: Payment, settlement: Settlement, tx: Tx): Promise<void> {
     await tx.payment.update({
       where: { id: payment.id },
       data: {
+        ...(settlement.refundMinor > 0
+          ? { refundStatus: RefundStatus.PENDING, refundDueMinor: settlement.refundMinor }
+          : {}),
         payoutStatus: settlement.payoutMinor > 0 ? PayoutStatus.PENDING : PayoutStatus.NOT_DUE,
         payoutMinor: settlement.payoutMinor,
         platformFeeMinor: settlement.platformFeeMinor,
@@ -252,107 +152,232 @@ export class PaymentsService {
   }
 
   /**
-   * Transfers what the cleaner is owed. Runs after the booking change has
-   * committed. A failure is recorded on the row (FAILED, with the reason) for
-   * an admin retry — never surfaced to a cleaner who has just finished a job.
+   * Sends a recorded refund. Claims it first by moving PENDING to
+   * NEEDS_REVIEW — the honest state while the outcome is unknown — so a
+   * crash mid-request, or a concurrent caller, can never lead to a resend.
    */
-  async payOut(paymentId: string): Promise<Payment> {
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: { booking: { select: { reference: true, cleanerId: true } } },
+  async sendRefund(paymentId: string): Promise<Payment> {
+    const claimed = await this.prisma.payment.updateMany({
+      where: { id: paymentId, refundStatus: RefundStatus.PENDING },
+      data: {
+        refundStatus: RefundStatus.NEEDS_REVIEW,
+        refundError: 'Refund in flight; outcome not yet recorded',
+      },
     });
 
-    if (!payment) {
-      throw new NotFoundException('Payment not found');
+    const payment = await this.findOrThrow(paymentId);
+    if (claimed.count === 0) {
+      return payment;
     }
+
+    const amountMinor = payment.refundDueMinor ?? 0;
+
+    try {
+      await this.chapa.refund(payment.txRef, amountMinor, {
+        reason: 'Booking cancelled',
+        reference: `rf-${payment.id}`,
+      });
+    } catch (error) {
+      const definite = error instanceof ChapaError && error.definite;
+      const refundError = definite
+        ? `Chapa refused the refund: ${messageOf(error)}`
+        : `Refund outcome unknown (${messageOf(error)}); check the Chapa dashboard before retrying`;
+
+      this.logger.error(`Refund for payment ${payment.id} needs review: ${refundError}`);
+      return this.prisma.payment.update({ where: { id: payment.id }, data: { refundError } });
+    }
+
+    const refundedMinor = payment.refundedMinor + amountMinor;
+    const refunded = await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        refundStatus: RefundStatus.DONE,
+        refundedMinor,
+        refundedAt: new Date(),
+        refundError: null,
+        status:
+          refundedMinor >= payment.amountMinor
+            ? PaymentStatus.REFUNDED
+            : PaymentStatus.PARTIALLY_REFUNDED,
+      },
+    });
+
+    this.logger.log(`Refunded ${amountMinor} for payment ${payment.id}`);
+    return refunded;
+  }
+
+  /**
+   * Admin: sends a refund again after a person has confirmed in the Chapa
+   * dashboard that the earlier attempt did not go through.
+   */
+  async retryRefund(paymentId: string): Promise<Payment> {
+    const { count } = await this.prisma.payment.updateMany({
+      where: { id: paymentId, refundStatus: RefundStatus.NEEDS_REVIEW },
+      data: { refundStatus: RefundStatus.PENDING },
+    });
+
+    if (count === 0) {
+      throw new ConflictException('This payment has no refund awaiting review');
+    }
+
+    return this.sendRefund(paymentId);
+  }
+
+  /**
+   * Transfers what the cleaner is owed. Runs after the booking change has
+   * committed, and again on an admin retry. A failure is recorded on the row
+   * for that retry — never surfaced to a cleaner who has just finished a job.
+   */
+  async payOut(paymentId: string): Promise<Payment> {
+    let payment = await this.findOrThrow(paymentId);
 
     if (
       payment.payoutStatus !== PayoutStatus.PENDING &&
+      payment.payoutStatus !== PayoutStatus.SENT &&
       payment.payoutStatus !== PayoutStatus.FAILED
     ) {
       return payment;
     }
 
-    const profile = await this.prisma.cleanerProfile.findUnique({
-      where: { userId: payment.booking.cleanerId },
-      select: { stripeAccountId: true },
-    });
-    const destination = profile?.stripeAccountId;
+    // Never twice: an earlier attempt is looked up before a new one is made.
+    if (payment.payoutReference) {
+      payment = await this.syncPayout(payment);
+      if (payment.payoutStatus !== PayoutStatus.FAILED) {
+        return payment;
+      }
+    }
 
-    if (!destination) {
+    const booking = await this.prisma.booking.findUniqueOrThrow({
+      where: { id: payment.bookingId },
+      select: { reference: true, cleanerId: true },
+    });
+    const account = await this.prisma.cleanerProfile.findUnique({
+      where: { userId: booking.cleanerId },
+      select: {
+        payoutBankCode: true,
+        payoutAccountNumber: true,
+        payoutAccountName: true,
+      },
+    });
+
+    if (!account?.payoutBankCode || !account.payoutAccountNumber || !account.payoutAccountName) {
       return this.failPayout(payment, 'The cleaner has no payout account');
     }
 
-    if (!payment.stripeChargeId || !payment.payoutMinor) {
-      return this.failPayout(payment, 'There is no captured charge to pay out from');
+    if (!payment.payoutMinor) {
+      return this.failPayout(payment, 'Nothing is owed to the cleaner');
+    }
+
+    // Write the new reference *before* asking Chapa, and claim the attempt
+    // with a compare-and-set, so a lost response or a concurrent caller
+    // leaves a reference to look up rather than a transfer to repeat.
+    const attempt = payment.payoutAttempts + 1;
+    const reference = `po-${payment.id}-${attempt}`;
+    const claimed = await this.prisma.payment.updateMany({
+      where: { id: payment.id, payoutAttempts: payment.payoutAttempts },
+      data: {
+        payoutAttempts: attempt,
+        payoutReference: reference,
+        payoutStatus: PayoutStatus.SENT,
+        payoutError: null,
+      },
+    });
+
+    if (claimed.count === 0) {
+      return this.findOrThrow(payment.id);
     }
 
     try {
-      // A transfer from an earlier attempt whose response was lost is adopted:
-      // a retry must never pay the cleaner twice.
-      const earlier = await this.stripe.transfers.list({
-        transfer_group: payment.bookingId,
-        limit: 100,
+      await this.chapa.transfer({
+        reference,
+        amountMinor: payment.payoutMinor,
+        currency: payment.currency,
+        bankCode: account.payoutBankCode,
+        accountNumber: account.payoutAccountNumber,
+        accountName: account.payoutAccountName,
       });
-      const transfer =
-        earlier.data.find((t) => destinationIdOf(t) === destination && !t.reversed) ??
-        (await this.stripe.transfers.create(
-          {
-            amount: payment.payoutMinor,
-            currency: payment.currency.toLowerCase(),
-            destination,
-            transfer_group: payment.bookingId,
-            // Draws on this charge's funds, so the transfer can be made
-            // before they settle into the platform's available balance.
-            source_transaction: payment.stripeChargeId,
-            description: `Payout for booking ${payment.booking.reference}`,
-            metadata: { bookingId: payment.bookingId },
-          },
-          // Stripe replays a failed request's error for 24h, so each attempt
-          // needs its own key; concurrent calls in one attempt share it.
-          { idempotencyKey: `payment-${payment.id}-payout-${payment.payoutAttempts}` },
-        ));
+    } catch (error) {
+      const definite = error instanceof ChapaError && error.definite;
+      // Refused outright: safe to try again with a new reference. Unknown
+      // outcome: stays SENT, so the next attempt looks this one up first.
+      return definite
+        ? this.failPayout(payment, messageOf(error))
+        : this.prisma.payment.update({
+            where: { id: payment.id },
+            data: { payoutError: `Transfer outcome unknown: ${messageOf(error)}` },
+          });
+    }
 
-      const paid = await this.prisma.payment.update({
+    this.logger.log(`Payout ${reference} queued for booking ${booking.reference}`);
+    return this.findOrThrow(payment.id);
+  }
+
+  /** Brings a payout in line with Chapa's view of its latest transfer. */
+  async syncPayout(payment: Payment): Promise<Payment> {
+    if (!payment.payoutReference) {
+      return payment;
+    }
+
+    let transfer;
+    try {
+      transfer = await this.chapa.verifyTransfer(payment.payoutReference);
+    } catch (error) {
+      // Cannot tell whether the last transfer happened, so nothing new may
+      // be attempted: keep the status, note why.
+      return this.prisma.payment.update({
         where: { id: payment.id },
         data: {
-          payoutStatus: PayoutStatus.PAID,
-          stripeTransferId: transfer.id,
-          paidOutAt: new Date(),
-          payoutError: null,
+          payoutError: `Could not check transfer ${payment.payoutReference}: ${messageOf(error)}`,
         },
       });
-
-      this.logger.log(`Paid out ${payment.payoutMinor} for booking ${payment.booking.reference}`);
-      return paid;
-    } catch (error) {
-      return this.failPayout(payment, stripeMessage(error));
-    }
-  }
-
-  /** Aligns the local row with Stripe's view of an intent. Idempotent. */
-  async syncFromIntent(intent: Stripe.PaymentIntent): Promise<Payment | null> {
-    const payment = await this.prisma.payment.findUnique({
-      where: { stripePaymentIntentId: intent.id },
-    });
-
-    // Not one of ours: another integration on the same Stripe account.
-    if (!payment) {
-      return null;
     }
 
-    const data = reconcile(payment, intent);
-    return data ? this.prisma.payment.update({ where: { id: payment.id }, data }) : payment;
+    if (transfer?.status === 'success') {
+      return this.prisma.payment.update({
+        where: { id: payment.id },
+        data: { payoutStatus: PayoutStatus.PAID, paidOutAt: new Date(), payoutError: null },
+      });
+    }
+
+    // Chapa never received it, or received and rejected it: a new attempt is safe.
+    if (!transfer || transfer.status === 'failed' || transfer.status === 'cancelled') {
+      return payment.payoutStatus === PayoutStatus.FAILED
+        ? payment
+        : this.failPayout(
+            payment,
+            transfer ? `Transfer ${transfer.status}` : 'Transfer not found at Chapa',
+          );
+    }
+
+    // Still in flight.
+    return payment.payoutStatus === PayoutStatus.SENT
+      ? payment
+      : this.prisma.payment.update({
+          where: { id: payment.id },
+          data: { payoutStatus: PayoutStatus.SENT },
+        });
   }
 
-  summarize(payment: Payment, view: { payout: boolean; clientSecret?: string }): PaymentSummary {
+  async syncPayoutByReference(reference: string): Promise<Payment | null> {
+    const payment = await this.prisma.payment.findUnique({ where: { payoutReference: reference } });
+    return payment ? this.syncPayout(payment) : null;
+  }
+
+  summarize(payment: Payment, view: { payout: boolean; checkout: boolean }): PaymentSummary {
     return {
       status: payment.status,
       amountMinor: payment.amountMinor,
       currency: payment.currency,
-      refundedMinor: payment.refundedMinor,
+      method: payment.method,
       failureMessage: payment.failureMessage,
-      ...(view.clientSecret ? { clientSecret: view.clientSecret } : {}),
+      refund: {
+        status: payment.refundStatus,
+        dueMinor: payment.refundDueMinor,
+        refundedMinor: payment.refundedMinor,
+      },
+      ...(view.checkout && payment.status === PaymentStatus.REQUIRES_PAYMENT && payment.checkoutUrl
+        ? { checkoutUrl: payment.checkoutUrl }
+        : {}),
       ...(view.payout
         ? {
             payout: {
@@ -370,78 +395,73 @@ export class PaymentsService {
 
     return this.prisma.payment.update({
       where: { id: payment.id },
-      data: {
-        payoutStatus: PayoutStatus.FAILED,
-        payoutError: reason,
-        payoutAttempts: { increment: 1 },
-      },
+      data: { payoutStatus: PayoutStatus.FAILED, payoutError: reason },
     });
   }
 
-  private async retrieveQuietly(intentId: string): Promise<Stripe.PaymentIntent | null> {
-    try {
-      return await this.stripe.paymentIntents.retrieve(intentId);
-    } catch {
-      return null;
+  private async findOrThrow(paymentId: string): Promise<Payment> {
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+
+    if (!payment) {
+      throw new NotFoundException('Payment not found');
     }
+
+    return payment;
   }
 }
 
 /**
- * The row update implied by Stripe's current view of an intent, or null.
+ * The row update implied by Chapa's view of a charge, or null.
  *
- * Only ever moves forward: events arrive out of order, and a late
- * "requires_capture" must not undo a capture already recorded.
+ * Only ever moves forward, so repeated or out-of-order notifications are
+ * harmless. A CANCELED payment can still become PAID: a customer may finish
+ * paying after the booking was cancelled, and that money must be seen (and
+ * refunded).
  */
 export function reconcile(
   payment: Payment,
-  intent: Stripe.PaymentIntent,
+  transaction: ChapaTransaction | null,
 ): Prisma.PaymentUpdateInput | null {
-  const open = OPEN.includes(payment.status);
+  if (!transaction) {
+    return null;
+  }
 
-  switch (intent.status) {
-    case 'requires_capture':
-      return payment.status === PaymentStatus.REQUIRES_PAYMENT
-        ? {
-            status: PaymentStatus.AUTHORIZED,
-            authorizedAt: new Date(),
-            stripeChargeId: chargeIdOf(intent),
-            failureMessage: null,
-          }
-        : null;
+  const unpaid =
+    payment.status === PaymentStatus.REQUIRES_PAYMENT || payment.status === PaymentStatus.CANCELED;
 
-    case 'succeeded':
-      return open
-        ? {
-            status: PaymentStatus.CAPTURED,
-            capturedAt: new Date(),
-            stripeChargeId: chargeIdOf(intent),
-          }
-        : null;
-
-    case 'canceled':
-      return open ? { status: PaymentStatus.CANCELED, canceledAt: new Date() } : null;
-
-    case 'requires_payment_method': {
-      const message = intent.last_payment_error?.message ?? null;
-      return payment.status === PaymentStatus.REQUIRES_PAYMENT &&
-        message &&
-        message !== payment.failureMessage
-        ? { failureMessage: message }
-        : null;
+  if (transaction.status === 'success') {
+    if (!unpaid) {
+      return null;
     }
 
-    default:
-      return null;
+    // Paid, but not what we asked for: never treat that as payment.
+    if (
+      transaction.amountMinor !== payment.amountMinor ||
+      transaction.currency.toUpperCase() !== payment.currency.toUpperCase()
+    ) {
+      const failureMessage =
+        `Chapa reports ${transaction.amountMinor} ${transaction.currency} paid; ` +
+        `expected ${payment.amountMinor} ${payment.currency}. Needs review.`;
+      return failureMessage === payment.failureMessage ? null : { failureMessage };
+    }
+
+    return {
+      status: PaymentStatus.PAID,
+      paidAt: new Date(),
+      chapaReference: transaction.reference,
+      method: transaction.method,
+      checkoutUrl: null,
+      failureMessage: null,
+    };
   }
-}
 
-function chargeIdOf(intent: Stripe.PaymentIntent): string | null {
-  const charge = intent.latest_charge;
-  return typeof charge === 'string' ? charge : (charge?.id ?? null);
-}
+  if (
+    (transaction.status === 'failed' || transaction.status === 'cancelled') &&
+    payment.status === PaymentStatus.REQUIRES_PAYMENT
+  ) {
+    const failureMessage = `Payment ${transaction.status} at Chapa`;
+    return failureMessage === payment.failureMessage ? null : { failureMessage };
+  }
 
-function destinationIdOf(transfer: Stripe.Transfer): string | null {
-  const destination = transfer.destination;
-  return typeof destination === 'string' ? destination : (destination?.id ?? null);
+  return null;
 }

@@ -7,7 +7,7 @@ import { BookingsModule } from './bookings/bookings.module';
 import { HealthController } from './health.controller';
 import { KycModule } from './kyc/kyc.module';
 import { PaymentsModule } from './payments/payments.module';
-import { StripeWebhookModule } from './payments/webhook/stripe-webhook.module';
+import { PaymentWebhookModule } from './payments/webhook/payment-webhook.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ServicesModule } from './services/services.module';
 import { StorageModule } from './storage/storage.module';
@@ -25,7 +25,7 @@ import { validateEnv } from './config/env.validation';
     AvailabilityModule,
     BookingsModule,
     PaymentsModule,
-    StripeWebhookModule,
+    PaymentWebhookModule,
   ],
   controllers: [HealthController],
 })

@@ -7,8 +7,8 @@ import { Env } from './config/env.validation';
  * reason as configureApp below.
  *
  * `rawBody` keeps the exact request bytes alongside the parsed JSON body.
- * Stripe signs those bytes; re-serialising the parsed body would change
- * whitespace and key order and fail every signature check. Only the Stripe
+ * Chapa signs those bytes; re-serialising the parsed body would change
+ * whitespace and key order and fail every signature check. Only the Chapa
  * webhook reads it.
  */
 export const NEST_APP_OPTIONS: NestApplicationOptions = { rawBody: true };

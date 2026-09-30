@@ -1,6 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
-import Stripe from 'stripe';
+import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { getServer } from './serverless';
 
@@ -45,53 +43,40 @@ describe('serverless entry point', () => {
   });
 
   /**
-   * Stripe signs the exact bytes it sends. This drives a signed event through
-   * the same Express app production serves, proving the raw body survives
-   * Nest's JSON parsing on this path — a unit test of the verifier cannot,
-   * because it is handed the bytes directly.
+   * Chapa signs the exact bytes it sends. This drives a signed notification
+   * through the same Express app production serves, proving the raw body
+   * survives Nest's JSON parsing on this path — a unit test of the verifier
+   * cannot, because it is handed the bytes directly.
    */
-  describe('Stripe webhook', () => {
-    const prisma = new PrismaClient();
-    const eventId = `evt_test_${randomUUID()}`;
-    // Unhandled type: exercises verification and the event log, nothing else.
-    const body = JSON.stringify({
-      id: eventId,
-      object: 'event',
-      type: 'customer.created',
-      data: { object: { id: 'cus_test' } },
-    });
-    const sign = (payload: string, secret = process.env.STRIPE_WEBHOOK_SECRET!) =>
-      new Stripe('sk_test_placeholder').webhooks.generateTestHeaderString({ payload, secret });
+  describe('Chapa webhook', () => {
+    // Deliberately not compact JSON: a re-serialised body would differ, so
+    // this only verifies if the exact received bytes are what gets hashed.
+    const body =
+      '{ "event": "charge.success",  "tx_ref": "bk-not-a-real-booking", "status": "success" }';
+    const sign = (payload: string) =>
+      createHmac('sha256', process.env.CHAPA_WEBHOOK_SECRET!).update(payload).digest('hex');
 
-    afterAll(async () => {
-      await prisma.stripeEvent.deleteMany({ where: { id: eventId } });
-      await prisma.$disconnect();
-    });
-
-    it('accepts a correctly signed event, unauthenticated, and records it', async () => {
+    it('accepts a correctly signed notification, unauthenticated', async () => {
       const server = await getServer();
 
+      // The tx_ref matches no payment in the real database, so it is
+      // acknowledged without calling Chapa.
       await request(server)
         .post('/api/v1/payments/webhook')
         .set('Content-Type', 'application/json')
-        .set('Stripe-Signature', sign(body))
+        .set('x-chapa-signature', sign(body))
         .send(body)
         .expect(200, { received: true });
-
-      await expect(prisma.stripeEvent.findUnique({ where: { id: eventId } })).resolves.toEqual(
-        expect.objectContaining({ type: 'customer.created' }),
-      );
     });
 
     it('rejects a tampered body', async () => {
       const server = await getServer();
-      const tampered = body.replace('cus_test', 'cus_evil');
 
       await request(server)
         .post('/api/v1/payments/webhook')
         .set('Content-Type', 'application/json')
-        .set('Stripe-Signature', sign(body))
-        .send(tampered)
+        .set('x-chapa-signature', sign(body))
+        .send(body.replace('bk-not-a-real-booking', 'bk-evil'))
         .expect(400);
     });
 

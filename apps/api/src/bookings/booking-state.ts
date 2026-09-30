@@ -7,30 +7,23 @@ import { BookingStatus } from '@prisma/client';
  * illegal move is impossible to express, and the diagram in the architecture
  * doc can be checked against this table by eye.
  *
- *   PENDING_PAYMENT ──card authorised──▶ REQUESTED ──accept──▶ ACCEPTED ──start──▶ IN_PROGRESS ──complete──▶ COMPLETED
- *        │                                  │                     │                   │
- *        │                                  ├──decline──▶ DECLINED                    │
- *        ├──────── cancel ─────────────────┴──cancel──▶ CANCELLED_BY_{CUSTOMER,CLEANER} ◀──cancel──┘
- *        └──────── hold lapsed ────────────┴──────────▶ EXPIRED
+ *   PENDING_PAYMENT ──paid──▶ REQUESTED ──accept──▶ ACCEPTED ──start──▶ IN_PROGRESS ──complete──▶ COMPLETED
+ *        │                       │                     │                   │
+ *        │                       ├──decline──▶ DECLINED                    │
+ *        └──cancel (customer)────┴──cancel──▶ CANCELLED_BY_{CUSTOMER,CLEANER} ◀──cancel──┘
  *
- * PENDING_PAYMENT → REQUESTED and → EXPIRED are made by the system, from
- * Stripe's view of the payment; no endpoint requests them.
+ * PENDING_PAYMENT → REQUESTED is made by the system, once Chapa confirms the
+ * payment; no endpoint requests it.
  */
 export const BOOKING_TRANSITIONS: Readonly<Record<BookingStatus, readonly BookingStatus[]>> =
   Object.freeze({
-    // The cleaner never sees an unpaid request, so only the customer (or the
-    // payment lapsing) can end one.
-    [BookingStatus.PENDING_PAYMENT]: [
-      BookingStatus.REQUESTED,
-      BookingStatus.CANCELLED_BY_CUSTOMER,
-      BookingStatus.EXPIRED,
-    ],
+    // The cleaner never sees an unpaid request, so only the customer can end one.
+    [BookingStatus.PENDING_PAYMENT]: [BookingStatus.REQUESTED, BookingStatus.CANCELLED_BY_CUSTOMER],
     [BookingStatus.REQUESTED]: [
       BookingStatus.ACCEPTED,
       BookingStatus.DECLINED,
       BookingStatus.CANCELLED_BY_CUSTOMER,
       BookingStatus.CANCELLED_BY_CLEANER,
-      BookingStatus.EXPIRED,
     ],
     [BookingStatus.ACCEPTED]: [
       BookingStatus.IN_PROGRESS,
@@ -43,7 +36,6 @@ export const BOOKING_TRANSITIONS: Readonly<Record<BookingStatus, readonly Bookin
     [BookingStatus.COMPLETED]: [],
     [BookingStatus.CANCELLED_BY_CUSTOMER]: [],
     [BookingStatus.CANCELLED_BY_CLEANER]: [],
-    [BookingStatus.EXPIRED]: [],
   });
 
 export function canTransition(from: BookingStatus, to: BookingStatus): boolean {

@@ -8,17 +8,18 @@
 
 ## Overview
 
-A two-sided marketplace: customers book cleans, cleaners deliver them. Cleaners
-must pass identity verification (KYC) and set up payouts before they can be
-matched to a job; customers pay by card, and cleaners are paid on completion.
+A two-sided marketplace in Ethiopia: customers book cleans, cleaners deliver
+them. Cleaners must pass identity verification (KYC) and set up payouts before
+they can be matched to a job; customers pay in birr when they book, and
+cleaners are paid on completion.
 
 ```
 Client apps ──► NestJS API (apps/api) ──► PostgreSQL (Prisma)
      │                  │  ▲
-     │                  │  └─────────── Stripe webhooks (payment + payout account events)
-     │                  ├────────────► Stripe (card holds, captures, refunds, Connect payouts)
+     │                  │  └─────────── Chapa webhooks and callbacks (signed / verified)
+     │                  ├────────────► Chapa (checkout, refunds, transfers to banks and wallets)
      │                  └────────────► Supabase Storage (private KYC bucket, S3 API)
-     ├──► Stripe.js (card entry; card details never reach the API)
+     ├──► Chapa hosted checkout (telebirr, CBE Birr, M-Pesa, cards — never via the API)
      └──► Supabase Auth (sign-up, sign-in, token issuance)
 ```
 
@@ -42,7 +43,7 @@ apps/api/            NestJS service
     addresses/       Customer addresses
     availability/    Cleaner working hours, time off, bookable slots
     bookings/        Booking lifecycle and state machine
-    payments/        Stripe: card holds, refunds, payouts, payout accounts, webhook
+    payments/        Chapa: checkout, refunds, payouts, payout accounts, webhook
     prisma/          Database client provider
     config/          Environment schema and typed accessors
     common/          Shared DTOs and time-zone helpers
@@ -178,21 +179,24 @@ regulated decision that is not recorded must not take effect.
 | `GET` | `/api/v1/bookings`, `/api/v1/bookings/:id` | participants |
 | `PATCH` | `/api/v1/bookings/:id/{accept,decline,start,complete}` | assigned `CLEANER` |
 | `PATCH` | `/api/v1/bookings/:id/cancel` | either participant |
-| `GET` | `/api/v1/bookings/:id/payment` | participants (client secret: paying customer only) |
+| `GET` | `/api/v1/bookings/:id/payment` | participants (checkout link: paying customer only) |
 | `POST` | `/api/v1/bookings/:id/payment/sync` | the booking's `CUSTOMER` |
 | `POST` | `/api/v1/bookings/:id/payout` | `ADMIN` (retry a failed payout) |
+| `POST` | `/api/v1/bookings/:id/refund` | `ADMIN` (resend a refund after checking Chapa) |
 | `POST` | `/api/v1/auth/me/become-cleaner` | `CUSTOMER` |
-| `POST` | `/api/v1/payments/connect/onboarding-link` | `CLEANER` |
-| `GET` | `/api/v1/payments/connect/status` | `CLEANER` |
-| `GET` | `/api/v1/payments/connect/return` | public (Stripe's onboarding return page) |
-| `POST` | `/api/v1/payments/webhook` | public, Stripe-signed |
+| `GET` | `/api/v1/payments/banks` | `CLEANER` |
+| `GET` `PUT` | `/api/v1/payments/payout-account` | `CLEANER` |
+| `POST` | `/api/v1/payments/webhook` | public, Chapa-signed |
+| `GET` | `/api/v1/payments/chapa/callback` | public (only triggers a verification call) |
+| `GET` | `/api/v1/payments/return` | public (landing page after checkout) |
 
 ## Epic 2 — Bookings & Scheduling
 
 ### Story 2.1 — Service catalogue
 
 `Service` rows define what can be booked. **Prices are integer minor units
-(pence)** and every calculation stays in integers — money never touches a float.
+(santim, in ETB)** and every calculation stays in integers — money never touches
+a float.
 A quote is the base price for `baseDurationMinutes` plus one
 `pricePerHalfHourMinor` per additional half hour, rounded up.
 
@@ -231,8 +235,8 @@ REQUESTED ──accept──▶ ACCEPTED ──start──▶ IN_PROGRESS ──
     └──cancel───▶ CANCELLED_BY_{CUSTOMER,CLEANER} ◀──cancel──┘
 ```
 
-(Epic 3 adds `PENDING_PAYMENT` before `REQUESTED` and an `EXPIRED` end state —
-see [Story 3.2](#story-32--pay-for-a-booking-hold-at-request-charge-on-accept).)
+(Epic 3 adds `PENDING_PAYMENT` before `REQUESTED` — see
+[Story 3.2](#story-32--pay-when-booking).)
 
 Transitions live as data in `src/bookings/booking-state.ts`, so an illegal move
 cannot be expressed and the diagram above can be checked against the table by
@@ -271,16 +275,24 @@ diverge from the booking.
 
 ## Epic 3 — Payments
 
-Stripe processes every card and payout. The API never sees a card number —
-the customer's browser hands the card to Stripe.js directly — nor a cleaner's
-bank details, which Stripe's hosted onboarding collects. What the API holds is
-the *decisions*: how much to take, when, what to give back, what the cleaner
-is owed.
+**Chapa**, Ethiopia's payment gateway, moves all money. Stripe was the first
+choice and was dropped: it cannot pay out to Ethiopia, and most customers here
+pay with mobile money rather than international cards. Chapa's hosted checkout
+takes telebirr, CBE Birr, M-Pesa and cards in birr; its transfers reach bank
+accounts and mobile wallets; it refunds; it signs its webhooks.
 
-Money is integer minor units everywhere, as in Epic 2, and every split of a
-booking's money is a pure function in `payments/payment-math.ts`. Whatever
-happens, `refund + payout + platform fee = what the customer paid`, checked
-exhaustively across prices and fee settings rather than by example.
+The API never sees a card or a wallet PIN — the customer pays on Chapa's
+page. What the API holds is the *decisions*: how much to take, what to give
+back, what the cleaner is owed.
+
+`payments/chapa.client.ts` is a small typed client over Chapa's HTTP API,
+written here rather than taken from a community SDK so every request shape is
+visible and tested. It is also the **only** place money changes format: the
+app works in integer santim; Chapa takes and returns decimal strings of birr.
+
+Every split of a booking's money is a pure function in `payments/payment-math.ts`.
+Whatever happens, `refund + payout + platform fee = what the customer paid`,
+checked exhaustively across prices and fee settings rather than by example.
 
 ### Story 3.1 — Becoming a cleaner, and getting paid
 
@@ -289,134 +301,111 @@ profile KYC hangs off — self-service, because it grants no reach on its own.
 It refuses while the customer has bookings in flight, since one account has
 one role and they could no longer act on those as a customer.
 
-Payouts use **Stripe Connect** with Stripe-hosted onboarding and dashboard
-(the "Express" arrangement, expressed as `controller` properties):
-
-1. `POST /payments/connect/onboarding-link` creates the cleaner's payout
-   account on first use and returns a single-use Stripe URL.
-2. Stripe returns the browser to `STRIPE_CONNECT_RETURN_URL`.
-3. That page calls `GET /payments/connect/status`, which reads the account
-   live from Stripe and caches `payoutsEnabled` on the profile. The
-   `account.updated` webhook does the same in the background.
+The cleaner then chooses where earnings go: a bank or wallet from
+`GET /payments/banks` (Chapa's own list of transfer destinations) and an
+account number, via `PUT /payments/payout-account`. The account number is
+checked against the bank's expected length, **never returned in full**, and
+every change is written to the audit log — changing where money goes is the
+obvious way to steal it.
 
 **A cleaner who cannot be paid cannot be booked** — the same gate as KYC,
 applied in the same two places: slot discovery shows nothing, and a direct
-request is refused. "Can be paid" means the transfers capability is active
-*and* payouts are enabled; either alone lets money arrive but not leave, or
-the reverse.
+request is refused.
 
-### Story 3.2 — Pay for a booking: hold at request, charge on accept
+### Story 3.2 — Pay when booking
 
 ```
-PENDING_PAYMENT ──card authorised──▶ REQUESTED ──accept──▶ ACCEPTED ──▶ …
-     │                                    │
-     ├── cancel (customer) ──────────────┼──▶ CANCELLED_BY_*
-     └── hold lapsed or voided ──────────┴──▶ EXPIRED
+PENDING_PAYMENT ──paid (verified with Chapa)──▶ REQUESTED ──accept──▶ ACCEPTED ──▶ …
+     └── cancel (customer) ──▶ CANCELLED_BY_CUSTOMER
 ```
 
-`POST /bookings` opens a **manual-capture PaymentIntent** — a hold on the card,
-not a charge — and returns its `clientSecret`. The booking waits as
-`PENDING_PAYMENT`, invisible to the cleaner (it reads as 404, not 403), until
-Stripe reports the card authorised; then it becomes `REQUESTED`.
+Mobile money has no card-style "hold now, charge later", so the customer pays
+up front. `POST /bookings` opens a Chapa checkout for the quote and returns its
+`checkoutUrl`. The booking waits as `PENDING_PAYMENT`, invisible to the cleaner
+(it reads as 404, not 403), until the money is confirmed; then it becomes
+`REQUESTED`, and accepting it moves no money at all.
 
-Two paths bring that news, deliberately:
+**No notification is believed on its own word.** Three paths can report a
+payment — Chapa's signed webhook, Chapa's unsigned callback, and the
+customer's app calling `POST /bookings/:id/payment/sync` on returning from
+checkout — and all three do the same thing: ask Chapa's verify endpoint, and
+check the amount and currency paid match what was asked. A payment of the
+wrong amount is flagged for review, never counted. The state only moves
+forward, so the paths can race or repeat freely.
 
-- the `payment_intent.amount_capturable_updated` **webhook**, and
-- `POST /bookings/:id/payment/sync`, which the customer's browser calls as
-  soon as Stripe.js confirms the card. The booking moves on at once, and a
-  webhook outage delays nothing.
-
-Both apply the same idempotent reconciliation, which only ever moves a payment
-forward, so they can race or repeat freely.
-
-**Accepting charges the card.** The capture runs *inside* the acceptance
-transaction, after the booking update:
-
-- the update comes first, so a clash caught by the no-overlap constraint fails
-  the transaction **before** the card is charged;
-- a capture that fails (hold lapsed, Stripe unreachable) rolls the acceptance
-  back — a booking is never `ACCEPTED` without the money.
-
-The transaction therefore stays open for a Stripe round trip (bounded at 20 s;
-the SDK makes one retry with an 8 s timeout). That holds one pooled connection
-per in-flight accept — acceptable at this scale, and the reason nothing inside
-it may use the root Prisma client, which with `connection_limit=1` would wait
-forever for the connection the transaction is holding.
-
-Why hold-then-capture rather than charge up front: a declined or ignored
-request costs nothing. Charging immediately would make every decline a refund,
-and Stripe keeps its processing fee on refunds. The cost is that a cleaner must
-answer within the card's authorisation window (about a week); after that
-Stripe voids the hold and the booking becomes `EXPIRED`.
+A customer can finish paying *after* cancelling the booking. That payment is
+still seen — a cancelled payment can still become paid — and refunded in full.
 
 ### Story 3.3 — Cancellation and refunds
 
 | Situation | Money |
 | --- | --- |
-| Customer abandons an unpaid request | Hold released |
-| Cleaner declines, or either side cancels before acceptance | Hold released |
-| Cleaner cancels an accepted or started clean | Full refund |
-| Customer cancels more than 24 h before the start | Full refund |
-| Customer cancels within 24 h | Refund minus `LATE_CANCELLATION_FEE_BPS` (50%); the fee goes to the cleaner, less the platform's share |
-
-**Refunds commit with the cancellation or not at all** — they run inside its
-transaction, so a booking can never read as cancelled while the money stayed
-put. Releasing a hold is the opposite: best effort, after the commit, because
-nothing was taken and an unreleased hold lapses on its own.
+| Customer abandons an unpaid booking | Nothing to return; the checkout lapses |
+| Cleaner declines | Full refund |
+| Cleaner cancels (any time), or customer cancels more than 24 h ahead | Full refund |
+| Customer cancels within 24 h of the start | Refund minus `LATE_CANCELLATION_FEE_BPS` (50%); the fee goes to the cleaner, less the platform's share |
 
 ### Story 3.4 — Paying the cleaner
 
-Completing a clean records the payout (price less `PLATFORM_FEE_BPS`) in the
-completion's transaction, then transfers it to the cleaner's Connect account
-once that has committed. This is Stripe's "separate charges and transfers"
-model: the platform charges the customer, holds the funds while the job
-happens, and pays the cleaner only for work done. `source_transaction` ties the
-transfer to the booking's charge, so it can be made before those funds settle.
+Completing a clean records the cleaner's share (price less `PLATFORM_FEE_BPS`,
+15%) and transfers it to their bank account or wallet through Chapa. The
+platform collects the payment, holds it while the job happens, and pays only
+for work done.
 
-A transfer that fails (the cleaner's account restricted, say) is recorded as
-`FAILED` with Stripe's reason, never surfaced to the cleaner who just finished,
-and retried by an admin through `POST /bookings/:id/payout`.
+A transfer Chapa refuses (a wrong account number, say) is recorded as `FAILED`
+with Chapa's reason, never surfaced to the cleaner who just finished, and
+retried by an admin with `POST /bookings/:id/payout` once fixed.
 
 ### Never twice
 
-Every Stripe call carries an idempotency key, which protects a network retry
-of *that request*. Separate attempts are a different problem — a cancel retried
-after a timeout, a payout retried a day later — and Stripe replays a failed
-request's error for 24 hours, so reusing a key across attempts would repeat the
-failure too. So:
+Money leaves in two ways, refunds and payouts. Both are **recorded** in the
+database transaction that decided them — so a booking and what it owes can
+never disagree — and **sent** to Chapa after it commits, so no transaction
+ever waits on the network.
 
-- **refunds and transfers first ask Stripe what already happened** (listing by
-  payment or by `transfer_group = bookingId`) and adopt it instead of repeating
-  it;
-- **a capture that errors** is checked against the intent's actual status, and
-  adopted if it in fact succeeded;
-- **each payout attempt gets its own key** (`payoutAttempts` is part of it).
+Retries are where money gets sent twice, and the two are handled differently
+because Chapa offers different tools for each:
+
+- **Payouts can be looked up.** Each attempt's reference (`po-<payment>-<n>`)
+  is written *before* the transfer is requested, and each attempt is claimed
+  with a compare-and-set, so two callers cannot both send. Before any new
+  attempt, the previous reference is looked up at Chapa: if it went through
+  it is adopted; if it is in flight, nothing happens; if Chapa cannot be
+  asked, nothing happens either. Only a transfer Chapa never received, or
+  rejected, is tried again.
+- **Refunds cannot.** Chapa has no way to look a refund up, so an unknown
+  outcome cannot be resolved automatically. A refund is claimed by moving it
+  to `NEEDS_REVIEW` *before* the call — the honest state while the outcome is
+  unknown — and only a clear success moves it to `DONE`. Anything else stays
+  in review until a person checks Chapa's dashboard and resends it with
+  `POST /bookings/:id/refund`. A refund may be slow; it is never doubled.
 
 ### The webhook
 
-`POST /payments/webhook` is public — Stripe holds no user token — so its
-signature is the only thing authenticating it: an HMAC over the exact bytes
-received. Nest parses JSON before any handler runs, and re-serialised JSON is
-different bytes, so both entry points create the app with `rawBody: true`
-(`NEST_APP_OPTIONS` in `bootstrap.ts`). `serverless.spec.ts` drives a signed
-event through the real serverless app and fails if that option is lost.
+`POST /payments/webhook` is public — Chapa holds no user token — so its
+signature is the only thing authenticating it: `x-chapa-signature` is an
+HMAC-SHA256 of the exact bytes received, keyed with the secret hash set in
+Chapa's dashboard (`CHAPA_WEBHOOK_SECRET`). Nest parses JSON before any handler
+runs, and re-serialised JSON is different bytes, so both entry points create
+the app with `rawBody: true` (`NEST_APP_OPTIONS` in `bootstrap.ts`).
+`serverless.spec.ts` drives a signed notification through the real serverless
+app and fails if that option is lost.
 
-Handling rules:
+A notification is a *nudge*: it names a charge (`tx_ref`) or a transfer (our
+`po-` reference), and the state is then read from Chapa's API. Event names,
+payload shapes and delivery order therefore do not matter, replays are
+harmless, and there is no event log to keep. A handler that fails answers 500,
+so Chapa delivers again.
 
-- **At most once.** Processed event ids are stored; a redelivery is
-  acknowledged and skipped. The id is recorded only after its handler
-  succeeds, so a failure answers 500 and Stripe redelivers.
-- **Fresh reads, not snapshots.** Handlers re-fetch the intent or account
-  rather than trusting the event's copy, so out-of-order delivery cannot apply
-  stale state — and the event payload's API version never matters.
-- **Unknown types are acknowledged**, or Stripe would retry them for days.
-- `STRIPE_WEBHOOK_SECRET` accepts several secrets: Stripe gives the "your
-  account" destination (payment events) and the "connected accounts"
-  destination (`account.updated`) one each, even at the same URL.
+`payments` has row-level security enabled with no policies, like every table
+in production's public schema, so payment and payout records are unreachable
+through Supabase's auto-generated REST API.
 
-`payments` and `stripe_events` have row-level security enabled with no
-policies, like every table in production's public schema, so card and payout
-records are unreachable through Supabase's auto-generated REST API.
+### Ethiopian defaults
+
+New services are priced in `ETB`, new cleaners' availability is in
+`Africa/Addis_Ababa` time, and new addresses default to `ET`. Existing rows
+keep their values.
 
 ## Deploying to Vercel
 
@@ -510,13 +499,15 @@ not merely that the TypeScript compiles.
 
 Deliberately out of scope so far, and the most likely next steps:
 
-- **Sweeping stale bookings.** An abandoned `PENDING_PAYMENT` booking never
-  expires on its own (Stripe does not void an intent nobody confirmed), and a
-  `REQUESTED` one waits for Stripe to void its hold. Both need a scheduled job;
-  neither blocks a slot meanwhile.
+- **Sweeping stale bookings.** An abandoned `PENDING_PAYMENT` booking stays
+  that way, and a paid `REQUESTED` booking the cleaner never answers holds the
+  customer's money until they cancel (which refunds them in full). Both need a
+  scheduled job — expire and refund; neither blocks a slot meanwhile.
+- **A second checkout for one booking.** If a checkout fails, the customer
+  cancels and books again; there is no "try paying again" on the same booking.
 - **Admin refunds, disputes and receipts.** Refunds happen only through
-  cancellation; there is no goodwill refund, no chargeback handling, and no
-  receipt email.
+  cancellation; there is no goodwill refund, no dispute handling, and no
+  receipt.
 - **Search and matching** — a customer must already know which cleaner they
   want; there is no "find me someone near E1 on Tuesday".
 - **Recurring bookings** — every booking is a one-off.

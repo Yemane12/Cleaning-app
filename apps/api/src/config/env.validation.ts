@@ -61,35 +61,25 @@ export const envSchema = z
       .positive()
       .default(10 * 1024 * 1024),
 
-    // --- Payments (Stripe) ---
-    /** sk_… or a restricted rk_… key. Test and live keys are both accepted. */
-    STRIPE_SECRET_KEY: z
+    // --- Payments (Chapa) ---
+    /** Chapa secret key: CHASECK_TEST-… while testing, CHASECK-… live. */
+    CHAPA_SECRET_KEY: z
       .string()
-      .regex(/^(sk|rk)_(test|live)_\w+$/, 'must be a Stripe secret (sk_) or restricted (rk_) key'),
+      .regex(/^CHASECK(_TEST)?-\S+$/, 'must be a Chapa secret key (CHASECK_TEST-… or CHASECK-…)'),
     /**
-     * Signing secret(s) of the webhook endpoint, comma-separated. Stripe gives
-     * the "your account" and "connected accounts" destinations separate
-     * secrets even when both point at the same URL.
+     * The "secret hash" set on the webhook in Chapa's dashboard. Chapa signs
+     * each webhook with it (HMAC-SHA256 of the body, `x-chapa-signature`).
      */
-    STRIPE_WEBHOOK_SECRET: z
-      .string()
-      .transform((value) =>
-        value
-          .split(',')
-          .map((secret) => secret.trim())
-          .filter(Boolean),
-      )
-      .refine(
-        (secrets) => secrets.length > 0 && secrets.every((s) => s.startsWith('whsec_')),
-        'must be one or more whsec_… secrets, comma-separated',
-      ),
+    CHAPA_WEBHOOK_SECRET: z.string().min(16, 'use at least 16 random characters'),
+    /** Where Chapa sends the customer's browser after checkout. */
+    PAYMENT_RETURN_URL: z.string().url(),
     /**
-     * Where Stripe sends a cleaner after payout onboarding — and back to, if
-     * the link expired. That page should call GET /payments/connect/status.
+     * This API's public base URL, e.g. https://cleaning-app-api.vercel.app.
+     * When set, Chapa also calls back here after each checkout — one more
+     * path, besides the webhook and the client's sync call, by which a
+     * payment is noticed.
      */
-    STRIPE_CONNECT_RETURN_URL: z.string().url(),
-    /** ISO country of cleaners' payout accounts; must match the platform's region. */
-    STRIPE_CONNECT_COUNTRY: z.string().length(2).default('GB'),
+    PUBLIC_API_URL: z.string().url().optional(),
     /** Platform commission on each payout, in basis points (1500 = 15%). */
     PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(1500),
     /**
