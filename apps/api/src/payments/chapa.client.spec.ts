@@ -211,6 +211,19 @@ describe('ChapaClient', () => {
     });
   });
 
+  it.each([
+    ['a nested list', [[{ reference: 'po-1-1', status: 'Success' }]]],
+    ['a list of JSON text', [JSON.stringify({ reference: 'po-1-1', status: 'success' })]],
+    ['JSON text', JSON.stringify({ reference: 'po-1-1', status: 'success' })],
+  ])('finds our transfer in %s', async (_, data) => {
+    fetchMock.mockReturnValueOnce(answer(200, { status: 'success', data }));
+
+    await expect(client.verifyTransfer('po-1-1')).resolves.toEqual({
+      status: 'success',
+      reference: 'po-1-1',
+    });
+  });
+
   // An answer that exists but cannot be read must never look like "not
   // found": that would allow a second transfer.
   it.each([
@@ -218,6 +231,9 @@ describe('ChapaClient', () => {
     ['a null status', { reference: 'po-1-1', status: null }],
     ['an empty list', []],
     ['a list without our transfer', [{ reference: 'po-other-1', status: 'success' }]],
+    ['a nested empty list', [[]]],
+    ['a list of plain text', ['not json']],
+    ['a list holding null', [null]],
   ])('reads an answer with %s as an unknown status, not as not found', async (_, data) => {
     fetchMock.mockReturnValueOnce(answer(200, { status: 'success', data }));
 
