@@ -20,6 +20,9 @@ describe('AppModule', () => {
     SUPABASE_URL: 'https://project.supabase.co',
     KYC_S3_REGION: 'eu-west-2',
     KYC_S3_BUCKET: 'kyc-documents',
+    CHAPA_SECRET_KEY: 'CHASECK_TEST-placeholder',
+    CHAPA_WEBHOOK_SECRET: 'test-webhook-secret-hash',
+    PAYMENT_RETURN_URL: 'https://app.example.test/bookings/paid',
   };
 
   const compile = () =>

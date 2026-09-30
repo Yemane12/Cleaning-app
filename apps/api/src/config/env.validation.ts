@@ -61,6 +61,34 @@ export const envSchema = z
       .positive()
       .default(10 * 1024 * 1024),
 
+    // --- Payments (Chapa) ---
+    /** Chapa secret key: CHASECK_TEST-… while testing, CHASECK-… live. */
+    CHAPA_SECRET_KEY: z
+      .string()
+      .regex(/^CHASECK(_TEST)?-\S+$/, 'must be a Chapa secret key (CHASECK_TEST-… or CHASECK-…)'),
+    /**
+     * The "secret hash" set on the webhook in Chapa's dashboard. Chapa signs
+     * each webhook with it (HMAC-SHA256 of the body, `x-chapa-signature`).
+     */
+    CHAPA_WEBHOOK_SECRET: z.string().min(16, 'use at least 16 random characters'),
+    /** Where Chapa sends the customer's browser after checkout. */
+    PAYMENT_RETURN_URL: z.string().url(),
+    /**
+     * This API's public base URL, e.g. https://cleaning-app-api.vercel.app.
+     * When set, Chapa also calls back here after each checkout — one more
+     * path, besides the webhook and the client's sync call, by which a
+     * payment is noticed.
+     */
+    PUBLIC_API_URL: z.string().url().optional(),
+    /** Platform commission on each payout, in basis points (1500 = 15%). */
+    PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(1500),
+    /**
+     * Share of the price a customer forfeits when cancelling inside the
+     * free-cancellation window (5000 = 50%). The cleaner receives it, less
+     * the platform fee, for the slot they held.
+     */
+    LATE_CANCELLATION_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(5000),
+
     /**
      * Comma-separated browser origins allowed to call this API cross-origin,
      * e.g. "https://app.example.com,https://staging.example.com". Empty by

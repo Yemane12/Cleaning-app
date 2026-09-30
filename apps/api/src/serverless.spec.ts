@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { getServer } from './serverless';
 
@@ -39,5 +40,54 @@ describe('serverless entry point', () => {
     const second = await getServer();
 
     expect(second).toBe(first);
+  });
+
+  /**
+   * Chapa signs the exact bytes it sends. This drives a signed notification
+   * through the same Express app production serves, proving the raw body
+   * survives Nest's JSON parsing on this path — a unit test of the verifier
+   * cannot, because it is handed the bytes directly.
+   */
+  describe('Chapa webhook', () => {
+    // Deliberately not compact JSON: a re-serialised body would differ, so
+    // this only verifies if the exact received bytes are what gets hashed.
+    const body =
+      '{ "event": "charge.success",  "tx_ref": "bk-not-a-real-booking", "status": "success" }';
+    const sign = (payload: string) =>
+      createHmac('sha256', process.env.CHAPA_WEBHOOK_SECRET!).update(payload).digest('hex');
+
+    it('accepts a correctly signed notification, unauthenticated', async () => {
+      const server = await getServer();
+
+      // The tx_ref matches no payment in the real database, so it is
+      // acknowledged without calling Chapa.
+      await request(server)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .set('x-chapa-signature', sign(body))
+        .send(body)
+        .expect(200, { received: true });
+    });
+
+    it('rejects a tampered body', async () => {
+      const server = await getServer();
+
+      await request(server)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .set('x-chapa-signature', sign(body))
+        .send(body.replace('bk-not-a-real-booking', 'bk-evil'))
+        .expect(400);
+    });
+
+    it('rejects an unsigned request', async () => {
+      const server = await getServer();
+
+      await request(server)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .send(body)
+        .expect(400);
+    });
   });
 });

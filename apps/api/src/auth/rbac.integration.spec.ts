@@ -112,6 +112,30 @@ describe('RBAC (HTTP)', () => {
     await request(app.getHttpServer()).get('/api/v1/health').expect(200);
   });
 
+  // Where Chapa and a browser returning from checkout land: they carry no token.
+  it("serves Chapa's return page and callback without authentication", async () => {
+    await as(null, 'get', '/api/v1/payments/return').expect(200);
+    await as(null, 'get', '/api/v1/payments/chapa/callback').expect(200);
+  });
+
+  it('keeps everyone but cleaners out of payout-account setup', async () => {
+    await as('customer', 'get', '/api/v1/payments/payout-account').expect(403);
+    await as('admin', 'get', '/api/v1/payments/banks').expect(403);
+  });
+
+  it('only lets a customer register as a cleaner', async () => {
+    await as('cleaner', 'post', '/api/v1/auth/me/become-cleaner').expect(403);
+    await as('admin', 'post', '/api/v1/auth/me/become-cleaner').expect(403);
+  });
+
+  it('reserves payout and refund retries for admins', async () => {
+    for (const action of ['payout', 'refund']) {
+      const path = `/api/v1/bookings/44444444-0000-4000-8000-000000000004/${action}`;
+      await as('cleaner', 'post', path).expect(403);
+      await as('customer', 'post', path).expect(403);
+    }
+  });
+
   it('lets an admin into the review queue', async () => {
     await as('admin', 'get', '/api/v1/kyc/reviews/pending').expect(200);
   });

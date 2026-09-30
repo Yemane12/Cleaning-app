@@ -6,6 +6,9 @@ describe('validateEnv — KYC storage', () => {
     SUPABASE_URL: 'https://project.supabase.co',
     KYC_S3_REGION: 'eu-west-1',
     KYC_S3_BUCKET: 'kyc-documents',
+    CHAPA_SECRET_KEY: 'CHASECK_TEST-placeholder',
+    CHAPA_WEBHOOK_SECRET: 'test-webhook-secret-hash',
+    PAYMENT_RETURN_URL: 'https://app.example.test/bookings/paid',
   };
 
   it('accepts the minimal configuration and defaults to sse-s3', () => {
@@ -50,5 +53,45 @@ describe('validateEnv — KYC storage', () => {
     expect(() => validateEnv({ ...withoutRegion, AWS_REGION: 'us-east-1' })).toThrow(
       /KYC_S3_REGION/,
     );
+  });
+});
+
+describe('validateEnv — payments', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+    SUPABASE_URL: 'https://project.supabase.co',
+    KYC_S3_REGION: 'eu-west-1',
+    KYC_S3_BUCKET: 'kyc-documents',
+    CHAPA_SECRET_KEY: 'CHASECK_TEST-placeholder',
+    CHAPA_WEBHOOK_SECRET: 'test-webhook-secret-hash',
+    PAYMENT_RETURN_URL: 'https://app.example.test/bookings/paid',
+  };
+
+  it('defaults to a 15% platform fee and a 50% late-cancellation fee', () => {
+    const env = validateEnv(base);
+
+    expect(env.PLATFORM_FEE_BPS).toBe(1500);
+    expect(env.LATE_CANCELLATION_FEE_BPS).toBe(5000);
+  });
+
+  it('accepts both test and live Chapa keys', () => {
+    expect(() => validateEnv({ ...base, CHAPA_SECRET_KEY: 'CHASECK-live-abc' })).not.toThrow();
+  });
+
+  // Chapa's dashboard shows the public key next to the secret one.
+  it('rejects a Chapa public key where the secret key belongs', () => {
+    expect(() => validateEnv({ ...base, CHAPA_SECRET_KEY: 'CHAPUBK_TEST-abc' })).toThrow(
+      /CHAPA_SECRET_KEY/,
+    );
+  });
+
+  it('rejects a guessable webhook secret', () => {
+    expect(() => validateEnv({ ...base, CHAPA_WEBHOOK_SECRET: 'secret' })).toThrow(
+      /CHAPA_WEBHOOK_SECRET/,
+    );
+  });
+
+  it('rejects a fee above 100%', () => {
+    expect(() => validateEnv({ ...base, PLATFORM_FEE_BPS: '10001' })).toThrow(/PLATFORM_FEE_BPS/);
   });
 });

@@ -12,6 +12,13 @@ booking lifecycle. Only KYC-approved cleaners are bookable, and overlapping
 confirmed bookings are prevented by a database constraint rather than an
 application check.
 
+**Epic 3 — Payments** (Chapa, Ethiopia): customers pay in birr when they book —
+telebirr, CBE Birr, M-Pesa or card — through Chapa's hosted checkout. Declined
+or cancelled bookings are refunded (a late cancellation keeps a fee for the
+cleaner), and cleaners are paid to their bank account or mobile wallet when a
+clean is completed. Customers can register as cleaners themselves; a cleaner is
+bookable only once both KYC and payout setup are done.
+
 ## Getting started
 
 ```bash
@@ -61,22 +68,40 @@ admin approves or rejects via `PATCH /api/v1/kyc/reviews/:userId`.
 ## Booking a clean
 
 ```bash
-# 1. Find bookable slots (empty unless the cleaner is KYC-approved)
+# 1. Find bookable slots (empty unless the cleaner is KYC-approved and can be paid)
 curl "http://localhost:3000/api/v1/cleaners/$CLEANER_ID/slots?date=2026-10-05&durationMinutes=120" \
   -H "Authorization: Bearer $TOKEN"
 
-# 2. Request one
+# 2. Request one. The response's payment.checkoutUrl is Chapa's payment page.
 curl -X POST http://localhost:3000/api/v1/bookings \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"cleanerId":"...","serviceId":"...","addressId":"...","scheduledStart":"2026-10-05T09:00:00Z","durationMinutes":120}'
 
-# 3. The cleaner accepts, then starts, then completes
+# 3. The customer pays on the checkout page, then the app asks the API to check:
+curl -X POST http://localhost:3000/api/v1/bookings/$BOOKING_ID/payment/sync \
+  -H "Authorization: Bearer $TOKEN"
+#    The booking is now REQUESTED and visible to the cleaner. (Chapa's webhook
+#    would get it there too; this just doesn't wait for it.)
+
+# 4. The cleaner accepts, then starts, then completes (this pays the cleaner).
 curl -X PATCH http://localhost:3000/api/v1/bookings/$BOOKING_ID/accept \
   -H "Authorization: Bearer $CLEANER_TOKEN"
 ```
 
 A request does not reserve the slot — several customers may request the same
-time, and whoever the cleaner accepts first gets it.
+time, and whoever the cleaner accepts first gets it. If the cleaner declines,
+the customer is refunded in full.
+
+## Becoming a cleaner
+
+```bash
+curl -X POST http://localhost:3000/api/v1/auth/me/become-cleaner -H "Authorization: Bearer $TOKEN"
+# Then KYC (above), and payout setup: pick a bank or wallet, enter the account.
+curl http://localhost:3000/api/v1/payments/banks -H "Authorization: Bearer $TOKEN"
+curl -X PUT http://localhost:3000/api/v1/payments/payout-account \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"bankCode":855,"accountNumber":"0912345678","accountName":"Abebe Kebede"}'
+```
 
 ## Deploying to Vercel
 
@@ -95,6 +120,11 @@ serverless adaptation actually changes and why.
      with `?pgbouncer=true&connection_limit=1`.
    - `DIRECT_URL` — Supabase's **direct** connection string (port 5432).
    - `CORS_ORIGINS` — your frontend's deployed URL(s), comma-separated.
+   - `CHAPA_SECRET_KEY`, `CHAPA_WEBHOOK_SECRET`, `PAYMENT_RETURN_URL`, and
+     optionally `PUBLIC_API_URL` — see `.env.example`. In Chapa's dashboard,
+     point the webhook at `https://your-app.vercel.app/api/v1/payments/webhook`
+     with a long random secret hash, and put the same hash in
+     `CHAPA_WEBHOOK_SECRET`.
    - Preview deployments run on every PR. If `DATABASE_URL` there points at
      the same Supabase project as production, every PR gets a live function
      writing to production data — either point Preview at a separate

@@ -1,5 +1,12 @@
-import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Prisma, User, UserRole, UserStatus } from '@prisma/client';
+import { OPEN_STATUSES } from '../bookings/booking-state';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { SupabaseJwtPayload } from './interfaces/supabase-jwt-payload.interface';
@@ -108,6 +115,60 @@ export class AuthService {
     return { id: user.id, email: user.email, role: user.role, status: user.status };
   }
 
+  /**
+   * Self-service switch from customer to cleaner, creating the profile that
+   * KYC and payout onboarding hang off. Grants no reach on its own: a cleaner
+   * cannot be booked until both are complete.
+   *
+   * One role per account, so a customer with bookings still in flight must
+   * finish or cancel them first — as a cleaner they could no longer act on
+   * them.
+   */
+  async becomeCleaner(user: AuthenticatedUser) {
+    if (user.role !== UserRole.CUSTOMER) {
+      throw new ConflictException('Only a customer account can register as a cleaner');
+    }
+
+    const openBookings = await this.prisma.booking.count({
+      where: { customerId: user.id, status: { in: [...OPEN_STATUSES] } },
+    });
+
+    if (openBookings > 0) {
+      throw new ConflictException(
+        'Finish or cancel your open bookings before registering as a cleaner',
+      );
+    }
+
+    try {
+      await this.prisma.$transaction([
+        // Compare-and-set on the role, so this cannot race an admin role change.
+        this.prisma.user.update({
+          where: { id: user.id, role: UserRole.CUSTOMER },
+          data: {
+            role: UserRole.CLEANER,
+            cleanerProfile: { upsert: { create: {}, update: {} } },
+          },
+        }),
+        this.prisma.auditLog.create({
+          data: {
+            actorId: user.id,
+            action: 'REGISTERED_AS_CLEANER',
+            entityType: 'User',
+            entityId: user.id,
+          },
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        throw new ConflictException('Your role changed while this request was in flight');
+      }
+      throw error;
+    }
+
+    this.logger.log(`User ${user.id} registered as a cleaner`);
+    return this.getProfile(user.id);
+  }
+
   async getProfile(userId: string) {
     return this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
@@ -120,7 +181,13 @@ export class AuthService {
         status: true,
         createdAt: true,
         cleanerProfile: {
-          select: { id: true, kycStatus: true, kycSubmittedAt: true, kycReviewedAt: true },
+          select: {
+            id: true,
+            kycStatus: true,
+            kycSubmittedAt: true,
+            kycReviewedAt: true,
+            payoutsEnabled: true,
+          },
         },
       },
     });
