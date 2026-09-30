@@ -383,9 +383,12 @@ because Chapa offers different tools for each:
 ### The webhook
 
 `POST /payments/webhook` is public — Chapa holds no user token — so its
-signature is the only thing authenticating it: `x-chapa-signature` is an
-HMAC-SHA256 of the exact bytes received, keyed with the secret hash set in
-Chapa's dashboard (`CHAPA_WEBHOOK_SECRET`). Nest parses JSON before any handler
+signature is the only thing authenticating it: an HMAC-SHA256 of the exact
+bytes received. Chapa's own sources disagree on the details (its Node SDK uses
+`x-chapa-signature` keyed with the dashboard's secret hash, its Python SDK
+`Chapa-Signature` keyed with the API secret key), so either header keyed with
+either secret is accepted — both are secrets only Chapa and the API hold. A
+header hashing only the secret, not the body, is rejected. Nest parses JSON before any handler
 runs, and re-serialised JSON is different bytes, so both entry points create
 the app with `rawBody: true` (`NEST_APP_OPTIONS` in `bootstrap.ts`).
 `serverless.spec.ts` drives a signed notification through the real serverless

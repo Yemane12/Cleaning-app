@@ -8,6 +8,7 @@ import { ChapaWebhookService } from './chapa-webhook.service';
 
 describe('ChapaWebhookService', () => {
   const SECRET = 'test-webhook-secret-hash';
+  const API_KEY = 'CHASECK_TEST-api-key';
 
   const body = (payload: object) => Buffer.from(JSON.stringify(payload));
   const sign = (raw: Buffer, secret = SECRET) =>
@@ -21,7 +22,7 @@ describe('ChapaWebhookService', () => {
     bookings = { onPaymentNudge: jest.fn() };
     payments = { syncPayoutByReference: jest.fn() };
 
-    const env: Partial<Env> = { CHAPA_WEBHOOK_SECRET: SECRET };
+    const env: Partial<Env> = { CHAPA_WEBHOOK_SECRET: SECRET, CHAPA_SECRET_KEY: API_KEY };
     service = new ChapaWebhookService(
       { get: (k: keyof Env) => env[k] } as unknown as ConfigService<Env, true>,
       bookings as unknown as BookingsService,
@@ -33,19 +34,19 @@ describe('ChapaWebhookService', () => {
     const charge = body({ event: 'charge.success', tx_ref: 'bk-1', status: 'success' });
 
     it('accepts a body signed with the secret hash', () => {
-      expect(service.verify(charge, sign(charge))).toEqual(
+      expect(service.verify(charge, [sign(charge)])).toEqual(
         expect.objectContaining({ tx_ref: 'bk-1' }),
       );
     });
 
     it('accepts the signature in upper case too', () => {
-      expect(() => service.verify(charge, sign(charge).toUpperCase())).not.toThrow();
+      expect(() => service.verify(charge, [sign(charge).toUpperCase()])).not.toThrow();
     });
 
     it('rejects a body altered after signing', () => {
       const tampered = Buffer.from(charge.toString().replace('bk-1', 'bk-2'));
 
-      expect(() => service.verify(tampered, sign(charge))).toThrow(BadRequestException);
+      expect(() => service.verify(tampered, [sign(charge)])).toThrow(BadRequestException);
     });
 
     // Why raw-body capture exists: the same JSON re-serialised is different
@@ -54,18 +55,35 @@ describe('ChapaWebhookService', () => {
       const raw = Buffer.from('{ "tx_ref": "bk-1",  "status": "success" }');
       const reserialised = Buffer.from(JSON.stringify(JSON.parse(raw.toString())));
 
-      expect(() => service.verify(reserialised, sign(raw))).toThrow(BadRequestException);
+      expect(() => service.verify(reserialised, [sign(raw)])).toThrow(BadRequestException);
     });
 
     it('rejects a signature made with another secret', () => {
-      expect(() => service.verify(charge, sign(charge, 'someone-elses-secret'))).toThrow(
+      expect(() => service.verify(charge, [sign(charge, 'someone-elses-secret')])).toThrow(
         BadRequestException,
       );
     });
 
+    // Chapa's sources disagree on which key signs; both are accepted.
+    it('accepts a body signed with the API secret key, in the Chapa-Signature header', () => {
+      expect(() => service.verify(charge, [undefined, sign(charge, API_KEY)])).not.toThrow();
+    });
+
+    it('accepts either header when only one carries a valid signature', () => {
+      expect(() => service.verify(charge, ['not-a-signature', sign(charge)])).not.toThrow();
+    });
+
+    // A header that hashes only the secret (not the body) proves nothing about
+    // this message and could be replayed onto any body.
+    it('rejects a signature that does not cover the body', () => {
+      const secretOnly = createHmac('sha256', SECRET).update(SECRET).digest('hex');
+
+      expect(() => service.verify(charge, [undefined, secretOnly])).toThrow(BadRequestException);
+    });
+
     it('rejects a missing signature or body', () => {
-      expect(() => service.verify(charge, undefined)).toThrow(BadRequestException);
-      expect(() => service.verify(undefined, 'abc')).toThrow(BadRequestException);
+      expect(() => service.verify(charge, [undefined, undefined])).toThrow(BadRequestException);
+      expect(() => service.verify(undefined, ['abc'])).toThrow(BadRequestException);
     });
   });
 

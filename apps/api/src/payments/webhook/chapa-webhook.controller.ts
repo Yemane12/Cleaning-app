@@ -32,8 +32,9 @@ export class ChapaWebhookController {
   async receive(
     @Req() request: RawBodyRequest<Request>,
     @Headers('x-chapa-signature') signature: string | undefined,
+    @Headers('chapa-signature') altSignature: string | undefined,
   ): Promise<{ received: true }> {
-    const payload = this.webhooks.verify(request.rawBody, signature);
+    const payload = this.webhooks.verify(request.rawBody, [signature, altSignature]);
     await this.webhooks.process(payload);
 
     return { received: true };

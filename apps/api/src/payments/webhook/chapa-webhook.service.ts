@@ -25,12 +25,25 @@ export class ChapaWebhookService {
   ) {}
 
   /**
-   * Proves the notification came from Chapa: `x-chapa-signature` is an
-   * HMAC-SHA256 of the exact bytes received, keyed with the secret hash set
-   * in Chapa's dashboard.
+   * Proves the notification came from Chapa: a signature header carrying an
+   * HMAC-SHA256 of the exact bytes received.
+   *
+   * Chapa's own sources disagree on the details — its Node SDK checks
+   * `x-chapa-signature` keyed with the dashboard's secret hash, its Python
+   * SDK `Chapa-Signature` keyed with the API secret key. Either header, keyed
+   * with either secret, is accepted: both keys are secrets only Chapa and
+   * this API hold, and a notification can only prompt a fresh read from
+   * Chapa anyway, never change state on its own say-so.
    */
-  verify(rawBody: Buffer | undefined, signature: string | undefined): Record<string, unknown> {
-    if (!signature) {
+  verify(
+    rawBody: Buffer | undefined,
+    signatures: Array<string | undefined>,
+  ): Record<string, unknown> {
+    const presented = signatures
+      .filter((signature): signature is string => Boolean(signature))
+      .map((signature) => signature.trim().toLowerCase());
+
+    if (presented.length === 0) {
       throw new BadRequestException('Missing x-chapa-signature header');
     }
 
@@ -41,11 +54,12 @@ export class ChapaWebhookService {
       throw new BadRequestException('Unreadable webhook body');
     }
 
-    const expected = createHmac('sha256', this.config.get('CHAPA_WEBHOOK_SECRET', { infer: true }))
-      .update(rawBody)
-      .digest('hex');
+    const expected = [
+      this.config.get('CHAPA_WEBHOOK_SECRET', { infer: true }),
+      this.config.get('CHAPA_SECRET_KEY', { infer: true }),
+    ].map((key) => createHmac('sha256', key).update(rawBody).digest('hex'));
 
-    if (!safeEqual(expected, signature.trim().toLowerCase())) {
+    if (!presented.some((signature) => expected.some((hash) => safeEqual(hash, signature)))) {
       throw new BadRequestException('Invalid Chapa signature');
     }
 
