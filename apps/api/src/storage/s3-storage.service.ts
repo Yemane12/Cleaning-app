@@ -30,22 +30,31 @@ export class S3StorageService implements OnModuleDestroy {
   private readonly logger = new Logger(S3StorageService.name);
   private readonly client: S3Client;
   private readonly bucket: string;
+  private readonly encryption: Env['KYC_S3_ENCRYPTION'];
   private readonly kmsKeyId?: string;
 
   constructor(private readonly config: ConfigService<Env, true>) {
-    const accessKeyId = config.get('AWS_ACCESS_KEY_ID', { infer: true });
-    const secretAccessKey = config.get('AWS_SECRET_ACCESS_KEY', { infer: true });
+    const accessKeyId = config.get('KYC_S3_ACCESS_KEY_ID', { infer: true });
+    const secretAccessKey = config.get('KYC_S3_SECRET_ACCESS_KEY', { infer: true });
 
     this.client = new S3Client({
-      region: config.get('AWS_REGION', { infer: true }),
-      endpoint: config.get('AWS_S3_ENDPOINT', { infer: true }),
-      forcePathStyle: config.get('AWS_S3_FORCE_PATH_STYLE', { infer: true }),
-      // Fall through to the default provider chain (task role, IRSA, SSO)
-      // whenever static keys are absent — which is how production should run.
+      region: config.get('KYC_S3_REGION', { infer: true }),
+      endpoint: config.get('KYC_S3_ENDPOINT', { infer: true }),
+      forcePathStyle: config.get('KYC_S3_FORCE_PATH_STYLE', { infer: true }),
+      // Explicit keys when given (always, on Vercel); otherwise the default
+      // chain — only correct on hosts where that chain is your own identity.
       ...(accessKeyId && secretAccessKey ? { credentials: { accessKeyId, secretAccessKey } } : {}),
+      // The SDK's default ("WHEN_SUPPORTED") computes a CRC32 at signing time.
+      // For a presigned PUT there is no body yet, so it signs the checksum of
+      // an EMPTY file into the URL (x-amz-checksum-crc32=AAAAAA==), and the
+      // store then rejects every real upload as a checksum mismatch. Only add
+      // checksums where an operation actually requires them.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     });
 
     this.bucket = config.get('KYC_S3_BUCKET', { infer: true });
+    this.encryption = config.get('KYC_S3_ENCRYPTION', { infer: true });
     this.kmsKeyId = config.get('KYC_S3_KMS_KEY_ID', { infer: true });
   }
 
@@ -83,8 +92,11 @@ export class S3StorageService implements OnModuleDestroy {
     const requiredHeaders: Record<string, string> = {
       'Content-Type': request.contentType,
       'Content-Length': String(request.contentLength),
-      'x-amz-server-side-encryption': encryption.ServerSideEncryption,
     };
+
+    if (encryption.ServerSideEncryption) {
+      requiredHeaders['x-amz-server-side-encryption'] = encryption.ServerSideEncryption;
+    }
 
     if (encryption.SSEKMSKeyId) {
       requiredHeaders['x-amz-server-side-encryption-aws-kms-key-id'] = encryption.SSEKMSKeyId;
@@ -155,11 +167,26 @@ export class S3StorageService implements OnModuleDestroy {
     this.logger.log(`Deleted object ${key}`);
   }
 
-  /** SSE-KMS when a key is configured, SSE-S3 otherwise. Never unencrypted. */
-  private encryptionParams(): { ServerSideEncryption: ServerSideEncryption; SSEKMSKeyId?: string } {
-    return this.kmsKeyId
-      ? { ServerSideEncryption: 'aws:kms', SSEKMSKeyId: this.kmsKeyId }
-      : { ServerSideEncryption: 'AES256' };
+  /**
+   * Per-upload encryption request. Objects are encrypted at rest in every
+   * mode; what differs is who asks for it. With sse-s3/sse-kms the request
+   * header asks, so it is signed into the URL and the client must send it.
+   * A provider-managed store (Supabase Storage) encrypts everything itself
+   * and does not accept those headers, so none are sent.
+   */
+  private encryptionParams(): {
+    ServerSideEncryption?: ServerSideEncryption;
+    SSEKMSKeyId?: string;
+  } {
+    switch (this.encryption) {
+      case 'sse-kms':
+        return { ServerSideEncryption: 'aws:kms', SSEKMSKeyId: this.kmsKeyId };
+      case 'provider-managed':
+        return {};
+      case 'sse-s3':
+      default:
+        return { ServerSideEncryption: 'AES256' };
+    }
   }
 }
 

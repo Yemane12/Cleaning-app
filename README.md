@@ -17,7 +17,7 @@ application check.
 ```bash
 cd apps/api
 npm install
-cp .env.example .env      # then fill in Supabase and AWS values
+cp .env.example .env      # then fill in Supabase and storage values
 npx prisma generate
 npx prisma migrate deploy  # requires a reachable PostgreSQL instance
 npm run start:dev
@@ -37,7 +37,8 @@ CI runs these on every pull request, along with `prisma validate`
 
 ## Uploading a KYC document
 
-The API brokers access to a private bucket; files go browser → S3 directly.
+The API brokers access to a private bucket (Supabase Storage in production, via its
+S3-compatible API); files go browser → storage directly.
 
 ```bash
 # 1. Ask for a signed URL (as a CLEANER)

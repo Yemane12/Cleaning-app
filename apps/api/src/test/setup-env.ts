@@ -14,7 +14,7 @@ const defaults: Record<string, string> = {
   NODE_ENV: 'test',
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/cleaning_app_test',
   SUPABASE_URL: 'https://project.supabase.co',
-  AWS_REGION: 'eu-west-2',
+  KYC_S3_REGION: 'eu-west-2',
   KYC_S3_BUCKET: 'kyc-documents-test',
 };
 

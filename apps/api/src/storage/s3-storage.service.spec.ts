@@ -12,9 +12,9 @@ const signedUrlMock = getSignedUrl as jest.MockedFunction<typeof getSignedUrl>;
 
 describe('S3StorageService', () => {
   const baseEnv: Partial<Env> = {
-    AWS_REGION: 'eu-west-2',
+    KYC_S3_REGION: 'eu-west-2',
     KYC_S3_BUCKET: 'kyc-documents',
-    AWS_S3_FORCE_PATH_STYLE: false,
+    KYC_S3_FORCE_PATH_STYLE: false,
     KYC_UPLOAD_URL_TTL_SECONDS: 300,
     KYC_DOWNLOAD_URL_TTL_SECONDS: 120,
   };
@@ -48,7 +48,7 @@ describe('S3StorageService', () => {
     expect(upload.method).toBe('PUT');
   });
 
-  it('defaults to SSE-S3 encryption when no KMS key is configured', async () => {
+  it('defaults to SSE-S3 encryption', async () => {
     const service = build();
 
     const upload = await service.createPresignedUpload({
@@ -62,8 +62,11 @@ describe('S3StorageService', () => {
     expect(upload.requiredHeaders['x-amz-server-side-encryption']).toBe('AES256');
   });
 
-  it('uses SSE-KMS and surfaces the key header when a KMS key is configured', async () => {
-    const service = build({ KYC_S3_KMS_KEY_ID: 'arn:aws:kms:eu-west-2:1:key/abc' });
+  it('uses SSE-KMS and surfaces the key header in sse-kms mode', async () => {
+    const service = build({
+      KYC_S3_ENCRYPTION: 'sse-kms',
+      KYC_S3_KMS_KEY_ID: 'arn:aws:kms:eu-west-2:1:key/abc',
+    });
 
     const upload = await service.createPresignedUpload({
       key: 'kyc/user/selfie/file.png',
@@ -75,6 +78,24 @@ describe('S3StorageService', () => {
     expect(command.input.ServerSideEncryption).toBe('aws:kms');
     expect(upload.requiredHeaders['x-amz-server-side-encryption-aws-kms-key-id']).toBe(
       'arn:aws:kms:eu-west-2:1:key/abc',
+    );
+  });
+
+  // Supabase Storage encrypts at rest itself and does not accept the SSE
+  // request headers; sending one would break every upload.
+  it('sends no encryption header in provider-managed mode', async () => {
+    const service = build({ KYC_S3_ENCRYPTION: 'provider-managed' });
+
+    const upload = await service.createPresignedUpload({
+      key: 'kyc/user/selfie/file.png',
+      contentType: 'image/png',
+      contentLength: 512,
+    });
+
+    const command = signedUrlMock.mock.calls[0][1] as PutObjectCommand;
+    expect(command.input.ServerSideEncryption).toBeUndefined();
+    expect(Object.keys(upload.requiredHeaders).some((h) => /server-side-encryption/.test(h))).toBe(
+      false,
     );
   });
 
