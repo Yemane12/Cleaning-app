@@ -219,17 +219,31 @@ export class ChapaClient {
     });
   }
 
-  /** A transfer as Chapa sees it, or null if Chapa has never heard of it. */
+  /**
+   * A transfer as Chapa sees it, or null if Chapa has never heard of it. An
+   * answer whose status cannot be read comes back with an empty status —
+   * never as null, which would allow a new attempt — and is logged.
+   */
   async verifyTransfer(reference: string): Promise<ChapaTransferStatus | null> {
     try {
-      const payload = await this.call<{ data?: { status?: string } | null }>(
+      const payload = await this.call<{ data?: unknown }>(
         'GET',
         `/transfers/verify/${encodeURIComponent(reference)}`,
       );
 
-      return payload.data
-        ? { status: String(payload.data.status ?? '').toLowerCase(), reference }
-        : null;
+      if (!payload.data) {
+        return null;
+      }
+
+      const status = transferStatusOf(payload.data, reference);
+      if (!status) {
+        // Field names only: the values include the recipient's account.
+        this.logger.warn(
+          `Verify transfer ${reference}: no status in Chapa's answer (${shapeOf(payload.data)})`,
+        );
+      }
+
+      return { status, reference };
     } catch (error) {
       if (isNotFound(error)) {
         return null;
@@ -279,6 +293,38 @@ export class ChapaClient {
 
     return payload;
   }
+}
+
+/**
+ * The status of our transfer in a verify answer: `data` itself, or — should
+ * Chapa answer with a list — the entry carrying our reference. Empty if
+ * there is none to read.
+ */
+function transferStatusOf(data: unknown, reference: string): string {
+  const record = Array.isArray(data)
+    ? data.find((item) => isObject(item) && item.reference === reference)
+    : data;
+
+  return isObject(record) && typeof record.status === 'string' ? record.status.toLowerCase() : '';
+}
+
+/** Describes an unexpected answer by its structure alone, never its values. */
+function shapeOf(data: unknown): string {
+  if (Array.isArray(data)) {
+    const first: unknown = data[0];
+    return `a list of ${data.length}${isObject(first) ? `, fields ${Object.keys(first).join(',')}` : ''}`;
+  }
+
+  if (isObject(data)) {
+    const status = data.status === null ? 'null' : typeof data.status;
+    return `fields ${Object.keys(data).join(',')}; status is ${status}`;
+  }
+
+  return typeof data;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

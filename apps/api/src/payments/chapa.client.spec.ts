@@ -194,6 +194,39 @@ describe('ChapaClient', () => {
     await expect(client.verifyTransfer('po-1-2')).resolves.toBeNull();
   });
 
+  it('finds our transfer when Chapa answers with a list', async () => {
+    fetchMock.mockReturnValueOnce(
+      answer(200, {
+        status: 'success',
+        data: [
+          { reference: 'po-other-1', status: 'failed' },
+          { reference: 'po-1-1', status: 'success' },
+        ],
+      }),
+    );
+
+    await expect(client.verifyTransfer('po-1-1')).resolves.toEqual({
+      status: 'success',
+      reference: 'po-1-1',
+    });
+  });
+
+  // An answer that exists but cannot be read must never look like "not
+  // found": that would allow a second transfer.
+  it.each([
+    ['no status field', { reference: 'po-1-1' }],
+    ['a null status', { reference: 'po-1-1', status: null }],
+    ['an empty list', []],
+    ['a list without our transfer', [{ reference: 'po-other-1', status: 'success' }]],
+  ])('reads an answer with %s as an unknown status, not as not found', async (_, data) => {
+    fetchMock.mockReturnValueOnce(answer(200, { status: 'success', data }));
+
+    await expect(client.verifyTransfer('po-1-1')).resolves.toEqual({
+      status: '',
+      reference: 'po-1-1',
+    });
+  });
+
   describe('errors', () => {
     it('marks a refusal as definite: the request did not happen', async () => {
       fetchMock.mockReturnValue(answer(422, { status: 'failed', message: 'Insufficient balance' }));
