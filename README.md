@@ -1,7 +1,8 @@
 # Cleaning App
 
-Marketplace API for a cleaning service. See [`docs/architecture.md`](docs/architecture.md)
-for the design.
+A marketplace for home cleaning in Ethiopia: the API in [`apps/api`](apps/api)
+and the customer web app in [`apps/web`](apps/web/README.md). See
+[`docs/architecture.md`](docs/architecture.md) for the design.
 
 **Epic 1 — Auth, Roles & KYC Verification Infrastructure**: Supabase JWT
 validation, `UserRole` RBAC guards, and S3 presigned URLs for KYC documents.
@@ -18,6 +19,11 @@ or cancelled bookings are refunded (a late cancellation keeps a fee for the
 cleaner), and cleaners are paid to their bank account or mobile wallet when a
 clean is completed. Customers can register as cleaners themselves; a cleaner is
 bookable only once both KYC and payout setup are done.
+
+**Web app** (`apps/web`): customers sign up, book a verified cleaner for a
+free slot, pay with Chapa, and see or cancel their bookings. Next.js, in
+English with every string in translation files so Amharic can be added
+without code changes.
 
 ## Getting started
 
@@ -40,7 +46,8 @@ npm run build
 ```
 
 CI runs these on every pull request, along with `prisma validate`
-(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)), and the web app's
+own checks, including browser tests — see [`apps/web/README.md`](apps/web/README.md).
 
 ## Uploading a KYC document
 
@@ -147,3 +154,19 @@ serverless adaptation actually changes and why.
    curl -i https://your-app.vercel.app/api/v1/auth/me \
      -H "Authorization: Bearer $REAL_SUPABASE_ACCESS_TOKEN"
    ```
+
+### The web app
+
+A second Vercel project, with Root Directory `apps/web` (Next.js is detected
+on its own).
+
+1. **Set its environment variables** (Production and Preview), from
+   `apps/web/.env.example`: `NEXT_PUBLIC_API_URL` (the API's URL),
+   `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. All
+   are public by design and built into the page.
+2. **Point the API at it**, in the API project's variables, then redeploy the API:
+   - `CORS_ORIGINS` — the web app's URL, so browsers may call the API;
+   - `PAYMENT_RETURN_URL` — `https://<web app>/payment/return`, so customers
+     land back in the app after paying.
+3. **In Supabase** (Authentication → URL Configuration), set the Site URL to the
+   web app's URL, so sign-up confirmation emails link back to it.
