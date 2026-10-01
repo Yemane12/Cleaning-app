@@ -100,10 +100,25 @@ describe('ChapaWebhookService', () => {
       expect(bookings.onPaymentNudge).toHaveBeenCalledWith('bk-1');
     });
 
-    it('routes a payout notification by our transfer reference', async () => {
-      await service.process({ event: 'payout.success', type: 'Payout', reference: 'po-pay-1-1' });
+    it('routes a payout notification by our transfer reference, with what it reports', async () => {
+      await service.process({
+        event: 'payout.success',
+        type: 'Payout',
+        reference: 'po-pay-1-1',
+        status: 'Success',
+        amount: '850.00',
+      });
 
-      expect(payments.syncPayoutByReference).toHaveBeenCalledWith('po-pay-1-1');
+      expect(payments.syncPayoutByReference).toHaveBeenCalledWith('po-pay-1-1', {
+        status: 'success',
+        amountMinor: 85_000,
+      });
+    });
+
+    it('reports nothing for a payout notification without a status', async () => {
+      await service.process({ event: 'payout.success', reference: 'po-pay-1-1' });
+
+      expect(payments.syncPayoutByReference).toHaveBeenCalledWith('po-pay-1-1', undefined);
     });
 
     it('ignores references that are not ours', async () => {

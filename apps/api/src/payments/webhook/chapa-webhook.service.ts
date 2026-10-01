@@ -3,7 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { BookingsService } from '../../bookings/bookings.service';
 import { Env } from '../../config/env.validation';
-import { PaymentsService } from '../payments.service';
+import { fromChapaAmount } from '../chapa.client';
+import { PaymentsService, TransferReport } from '../payments.service';
 
 /**
  * Turns Chapa's notifications into state changes.
@@ -12,7 +13,9 @@ import { PaymentsService } from '../payments.service';
  * charge or a transfer, and the state is then read back from Chapa's API.
  * That makes event names, payload shapes and delivery order irrelevant,
  * makes replays harmless, and means a missed notification only delays
- * things — the customer's sync call reaches the same code.
+ * things — the customer's sync call reaches the same code. The one
+ * exception: where Chapa's transfer lookup gives no answer, a payout
+ * notification's own status decides (see PaymentsService.syncPayout).
  */
 @Injectable()
 export class ChapaWebhookService {
@@ -93,9 +96,20 @@ export class ChapaWebhookService {
     }
 
     if (reference?.startsWith('po-')) {
-      await this.payments.syncPayoutByReference(reference);
+      await this.payments.syncPayoutByReference(reference, transferReportOf(payload));
     }
   }
+}
+
+/**
+ * What a payout notification says. Used only where Chapa's lookup gives no
+ * answer, and only because the signature has already been checked.
+ */
+function transferReportOf(payload: Record<string, unknown>): TransferReport | undefined {
+  const status = stringField(payload, 'status');
+  return status
+    ? { status: status.toLowerCase(), amountMinor: fromChapaAmount(payload.amount) }
+    : undefined;
 }
 
 function stringField(payload: Record<string, unknown>, key: string): string | undefined {

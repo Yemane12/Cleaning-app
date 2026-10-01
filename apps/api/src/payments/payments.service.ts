@@ -3,9 +3,21 @@ import { ConfigService } from '@nestjs/config';
 import { Payment, PaymentStatus, PayoutStatus, Prisma, RefundStatus } from '@prisma/client';
 import { Env } from '../config/env.validation';
 import { PrismaService } from '../prisma/prisma.service';
-import { ChapaClient, ChapaError, ChapaTransaction, isFailedStatus } from './chapa.client';
+import {
+  ChapaClient,
+  ChapaError,
+  ChapaTransaction,
+  ChapaTransferStatus,
+  isFailedStatus,
+} from './chapa.client';
 import { messageOf, toHttpError } from './chapa-errors';
 import { FeePolicy, Settlement } from './payment-math';
+
+/** What a signed Chapa notification says about one of our transfers. */
+export interface TransferReport {
+  status: string;
+  amountMinor: number;
+}
 
 /** An interactive-transaction client — writes that must commit with a booking change. */
 type Tx = Prisma.TransactionClient;
@@ -324,31 +336,42 @@ export class PaymentsService {
     return this.findOrThrow(payment.id);
   }
 
-  /** Brings a payout in line with Chapa's view of its latest transfer. */
-  async syncPayout(payment: Payment): Promise<Payment> {
+  /**
+   * Brings a payout in line with Chapa's view of its latest transfer: its
+   * lookup API, or — only where that gives no answer — a signed notification
+   * about this very transfer (`report`).
+   */
+  async syncPayout(payment: Payment, report?: TransferReport): Promise<Payment> {
     if (!payment.payoutReference) {
       return payment;
     }
 
-    let transfer;
+    let transfer: ChapaTransferStatus | null;
     try {
       transfer = await this.chapa.verifyTransfer(payment.payoutReference);
+      this.logger.log(
+        transfer
+          ? `Transfer ${payment.payoutReference}: Chapa reports ${transfer.status || '(no status)'}`
+          : `Transfer ${payment.payoutReference}: not found at Chapa`,
+      );
     } catch (error) {
-      // Cannot tell whether the last transfer happened, so nothing new may
-      // be attempted: keep the status, note why.
-      return this.prisma.payment.update({
-        where: { id: payment.id },
-        data: {
-          payoutError: `Could not check transfer ${payment.payoutReference}: ${messageOf(error)}`,
-        },
-      });
+      transfer = this.fromReport(payment, report);
+      if (!transfer) {
+        // Cannot tell whether the last transfer happened, so nothing new may
+        // be attempted: keep the status, note why.
+        return this.prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            payoutError: `Could not check transfer ${payment.payoutReference}: ${messageOf(error)}`,
+          },
+        });
+      }
     }
 
-    this.logger.log(
-      transfer
-        ? `Transfer ${payment.payoutReference}: Chapa reports ${transfer.status || '(no status)'}`
-        : `Transfer ${payment.payoutReference}: not found at Chapa`,
-    );
+    // The lookup's own answer stands when it has one.
+    if (!transfer?.status) {
+      transfer = this.fromReport(payment, report) ?? transfer;
+    }
 
     if (transfer?.status === 'success') {
       return this.prisma.payment.update({
@@ -376,9 +399,36 @@ export class PaymentsService {
         });
   }
 
-  async syncPayoutByReference(reference: string): Promise<Payment | null> {
+  async syncPayoutByReference(reference: string, report?: TransferReport): Promise<Payment | null> {
     const payment = await this.prisma.payment.findUnique({ where: { payoutReference: reference } });
-    return payment ? this.syncPayout(payment) : null;
+    return payment ? this.syncPayout(payment, report) : null;
+  }
+
+  /**
+   * Chapa's transfer lookup does not always answer: live, it returned
+   * `data: [null]` for a transfer it had just delivered and notified us
+   * about. A signed notification then decides — its signature proves it is
+   * Chapa's word — provided a success names the amount that was sent.
+   */
+  private fromReport(
+    payment: Payment,
+    report: TransferReport | undefined,
+  ): ChapaTransferStatus | null {
+    const reference = payment.payoutReference;
+    if (!report?.status || !reference) {
+      return null;
+    }
+
+    if (report.status === 'success' && report.amountMinor !== payment.payoutMinor) {
+      this.logger.warn(
+        `Transfer ${reference}: notified success for ${report.amountMinor}, ` +
+          `but ${payment.payoutMinor} was sent; not taken as paid`,
+      );
+      return null;
+    }
+
+    this.logger.log(`Transfer ${reference}: taking Chapa's signed notification: ${report.status}`);
+    return { status: report.status, reference };
   }
 
   summarize(payment: Payment, view: { payout: boolean; checkout: boolean }): PaymentSummary {

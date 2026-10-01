@@ -400,6 +400,15 @@ payload shapes and delivery order therefore do not matter, replays are
 harmless, and there is no event log to keep. A handler that fails answers 500,
 so Chapa delivers again.
 
+One exception, found live: Chapa's transfer lookup
+(`GET /transfers/verify/{reference}`) can answer without a status. It
+returned `data: [null]` for a transfer Chapa had just delivered and notified
+us about. An answer like that is never read as "not found", which would
+allow a second transfer. Instead, the payout notification's own status
+decides, because its signature proves it is Chapa's word. A success counts
+only if it names the amount that was sent. When the lookup does answer, its
+answer stands.
+
 `payments` has row-level security enabled with no policies, like every table
 in production's public schema, so payment and payout records are unreachable
 through Supabase's auto-generated REST API.
