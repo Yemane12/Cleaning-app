@@ -121,8 +121,8 @@ describe('ChapaClient', () => {
     });
   });
 
-  // The shape of Chapa's documented example: its charge reference in the
-  // path, form fields, meta as meta[key].
+  // Chapa's documented shape — its charge reference in the path, form
+  // fields — minus the optional meta, which Chapa refused live.
   it("refunds by Chapa's charge reference as a form post, amount in birr", async () => {
     fetchMock.mockReturnValue(answer(200, { status: 'success', data: {} }));
 
@@ -138,8 +138,7 @@ describe('ChapaClient', () => {
     expect(form.get('amount')).toBe('20.00');
     expect(form.get('reason')).toBe('Booking cancelled');
     expect(form.get('reference')).toBe('rf-BK-1');
-    expect(form.get('meta[reference]')).toBe('rf-BK-1');
-    expect(form.has('meta')).toBe(false);
+    expect([...form.keys()].filter((key) => key.startsWith('meta'))).toEqual([]);
   });
 
   it('lists banks and wallets with their account-number length', async () => {
