@@ -4,6 +4,7 @@ import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { Roles } from './decorators/roles.decorator';
 import { AssignRoleDto } from './dto/assign-role.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 
 @Controller('auth')
@@ -17,6 +18,12 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.getProfile(user.id);
+  }
+
+  /** The caller's own name and phone. */
+  @Patch('me')
+  updateMe(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(user.id, dto);
   }
 
   /** A customer opts in to working as a cleaner; KYC and payout setup follow. */

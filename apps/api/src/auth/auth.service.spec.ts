@@ -80,6 +80,44 @@ describe('AuthService', () => {
     );
   });
 
+  it('takes the name given at sign-up from user_metadata', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.create.mockResolvedValue(storedUser());
+
+    await service.resolveUserFromToken(
+      payload({ user_metadata: { full_name: '  Abebe Kebede ' } }),
+    );
+
+    expect(prisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullName: 'Abebe Kebede' }) }),
+    );
+  });
+
+  it('provisions without a name when none usable was given', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.create.mockResolvedValue(storedUser());
+
+    await service.resolveUserFromToken(payload({ user_metadata: { full_name: 42 } }));
+
+    expect(prisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullName: null }) }),
+    );
+  });
+
+  it('updates only the name and phone given, then returns the profile', async () => {
+    prisma.user.update.mockResolvedValue(storedUser());
+
+    await service.updateProfile(userId, { fullName: ' Abebe K. ' });
+
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: userId },
+      data: { fullName: 'Abebe K.' },
+    });
+    expect(prisma.user.findUniqueOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: userId } }),
+    );
+  });
+
   it('honours a role hint from service-role-owned app_metadata', async () => {
     prisma.user.findUnique.mockResolvedValue(null);
     prisma.user.create.mockResolvedValue(storedUser({ role: UserRole.CLEANER }));

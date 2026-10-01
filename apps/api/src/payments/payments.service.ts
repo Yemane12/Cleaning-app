@@ -87,13 +87,18 @@ export class PaymentsService {
     const txRef = `bk-${request.bookingId}`;
     const publicApiUrl = this.config.get('PUBLIC_API_URL', { infer: true });
 
+    // Chapa sends the browser back to one fixed page; the booking id tells
+    // that page which payment to check.
+    const returnUrl = new URL(this.config.get('PAYMENT_RETURN_URL', { infer: true }));
+    returnUrl.searchParams.set('booking', request.bookingId);
+
     try {
       const { checkoutUrl } = await this.chapa.initialize({
         txRef,
         amountMinor: request.amountMinor,
         currency: request.currency,
         email: request.email,
-        returnUrl: this.config.get('PAYMENT_RETURN_URL', { infer: true }),
+        returnUrl: returnUrl.toString(),
         callbackUrl: publicApiUrl
           ? `${publicApiUrl.replace(/\/$/, '')}/api/v1/payments/chapa/callback`
           : undefined,
