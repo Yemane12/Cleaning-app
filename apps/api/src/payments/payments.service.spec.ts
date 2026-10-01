@@ -503,6 +503,89 @@ describe('PaymentsService', () => {
     });
   });
 
+  // Live, Chapa's transfer lookup answered `data: [null]` for a transfer it
+  // had delivered; only its signed notification said what happened.
+  describe('syncPayoutByReference with a signed notification', () => {
+    const reference = 'po-BK-7Q2ZK4-2';
+    const unreadable = { status: '', reference };
+    const success = { status: 'success', amountMinor: 340_000 };
+
+    beforeEach(() => {
+      stored = payment({
+        status: PaymentStatus.PAID,
+        payoutStatus: PayoutStatus.SENT,
+        payoutMinor: 340_000,
+        payoutReference: reference,
+        payoutAttempts: 2,
+      });
+    });
+
+    it('takes a notified success when the lookup gives no answer', async () => {
+      chapa.verifyTransfer.mockResolvedValue(unreadable);
+
+      const result = await service.syncPayoutByReference(reference, success);
+
+      expect(result).toEqual(expect.objectContaining({ payoutStatus: PayoutStatus.PAID }));
+      expect(result!.paidOutAt).toBeInstanceOf(Date);
+    });
+
+    it('takes a notified success when the lookup cannot be reached', async () => {
+      chapa.verifyTransfer.mockRejectedValue(new ChapaError('timeout', 0));
+
+      const result = await service.syncPayoutByReference(reference, success);
+
+      expect(result!.payoutStatus).toBe(PayoutStatus.PAID);
+    });
+
+    // "Not found" would otherwise allow a second transfer.
+    it('lets a notified success outrank "not found"', async () => {
+      chapa.verifyTransfer.mockResolvedValue(null);
+
+      const result = await service.syncPayoutByReference(reference, success);
+
+      expect(result!.payoutStatus).toBe(PayoutStatus.PAID);
+    });
+
+    it('never takes a success for another amount as paid', async () => {
+      chapa.verifyTransfer.mockResolvedValue(unreadable);
+
+      const result = await service.syncPayoutByReference(reference, {
+        status: 'success',
+        amountMinor: 1,
+      });
+
+      expect(result!.payoutStatus).toBe(PayoutStatus.SENT);
+    });
+
+    it("keeps the lookup's own answer when it has one", async () => {
+      chapa.verifyTransfer.mockResolvedValue({ status: 'pending', reference });
+
+      const result = await service.syncPayoutByReference(reference, success);
+
+      expect(result!.payoutStatus).toBe(PayoutStatus.SENT);
+    });
+
+    it('takes a notified failure, ready for a retry', async () => {
+      chapa.verifyTransfer.mockResolvedValue(unreadable);
+
+      const result = await service.syncPayoutByReference(reference, {
+        status: 'failed/cancelled',
+        amountMinor: Number.NaN,
+      });
+
+      expect(result!.payoutStatus).toBe(PayoutStatus.FAILED);
+    });
+
+    it('stays in flight with neither an answer nor a notification', async () => {
+      chapa.verifyTransfer.mockResolvedValue(unreadable);
+
+      const result = await service.syncPayoutByReference(reference);
+
+      expect(result!.payoutStatus).toBe(PayoutStatus.SENT);
+      expect(chapa.transfer).not.toHaveBeenCalled();
+    });
+  });
+
   describe('summarize', () => {
     it('shows the checkout link only when asked and only while unpaid', () => {
       expect(service.summarize(payment(), { payout: false, checkout: true }).checkoutUrl).toBe(
