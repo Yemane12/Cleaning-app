@@ -289,6 +289,9 @@ export class BookingsService {
       where: { id: bookingId },
       include: {
         service: { select: { slug: true, name: true, category: true } },
+        // Each side sees the other's name — never their contact details.
+        cleaner: { select: { fullName: true } },
+        customer: { select: { fullName: true } },
         address: { select: { line1: true, line2: true, city: true, postcode: true } },
         events: { orderBy: { createdAt: 'asc' } },
         payment: true,
@@ -339,7 +342,10 @@ export class BookingsService {
             : {},
         ],
       },
-      include: { service: { select: { slug: true, name: true } } },
+      include: {
+        service: { select: { slug: true, name: true } },
+        cleaner: { select: { fullName: true } },
+      },
       orderBy: { scheduledStart: 'asc' },
       take: query.take,
       skip: query.skip,
