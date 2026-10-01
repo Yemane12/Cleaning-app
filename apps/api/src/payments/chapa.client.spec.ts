@@ -121,18 +121,25 @@ describe('ChapaClient', () => {
     });
   });
 
-  it('refunds as a form post, amount in birr', async () => {
+  // The shape of Chapa's documented example: its charge reference in the
+  // path, form fields, meta as meta[key].
+  it("refunds by Chapa's charge reference as a form post, amount in birr", async () => {
     fetchMock.mockReturnValue(answer(200, { status: 'success', data: {} }));
 
-    await client.refund('bk-1', 2000, { reason: 'Booking cancelled', reference: 'rf-1' });
+    await client.refund('APezQ1KKswbb', 2000, {
+      reason: 'Booking cancelled',
+      reference: 'rf-BK-1',
+    });
 
     const { url, init, headers } = lastCall();
-    expect(url).toBe('https://api.chapa.co/v1/refund/bk-1');
+    expect(url).toBe('https://api.chapa.co/v1/refund/APezQ1KKswbb');
     expect(headers['Content-Type']).toBe('application/x-www-form-urlencoded');
     const form = new URLSearchParams(init.body as string);
     expect(form.get('amount')).toBe('20.00');
     expect(form.get('reason')).toBe('Booking cancelled');
-    expect(JSON.parse(form.get('meta')!)).toEqual({ reference: 'rf-1' });
+    expect(form.get('reference')).toBe('rf-BK-1');
+    expect(form.get('meta[reference]')).toBe('rf-BK-1');
+    expect(form.has('meta')).toBe(false);
   });
 
   it('lists banks and wallets with their account-number length', async () => {

@@ -205,6 +205,7 @@ describe('PaymentsService', () => {
     beforeEach(() => {
       stored = payment({
         status: PaymentStatus.PAID,
+        chapaReference: 'APHFBye9vpFDF',
         refundStatus: RefundStatus.PENDING,
         refundDueMinor: 200_000,
       });
@@ -213,9 +214,9 @@ describe('PaymentsService', () => {
     it('sends the recorded amount and marks a part refund as such', async () => {
       const result = await service.sendRefund('pay-1');
 
-      expect(chapa.refund).toHaveBeenCalledWith('bk-bk-1', 200_000, {
+      expect(chapa.refund).toHaveBeenCalledWith('APHFBye9vpFDF', 200_000, {
         reason: 'Booking cancelled',
-        reference: 'rf-pay-1',
+        reference: 'rf-BK-7Q2ZK4',
       });
       expect(result).toEqual(
         expect.objectContaining({
@@ -224,6 +225,14 @@ describe('PaymentsService', () => {
           status: PaymentStatus.PARTIALLY_REFUNDED,
         }),
       );
+    });
+
+    it("falls back to our tx_ref when Chapa's reference was never read", async () => {
+      stored = { ...stored, chapaReference: null };
+
+      await service.sendRefund('pay-1');
+
+      expect(chapa.refund).toHaveBeenCalledWith('bk-bk-1', 200_000, expect.anything());
     });
 
     it('marks a full refund REFUNDED', async () => {
