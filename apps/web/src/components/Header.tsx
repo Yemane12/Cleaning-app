@@ -1,0 +1,49 @@
+'use client';
+
+import Link from 'next/link';
+import { useI18n } from '@/i18n/I18nProvider';
+import { useAuth } from '@/lib/auth';
+
+export function Header() {
+  const { t } = useI18n();
+  const { state, signOut } = useAuth();
+  const signedIn = state.status === 'signedIn';
+
+  return (
+    <header className="border-b border-stone-200 bg-white">
+      <nav className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <Link href="/" className="text-lg font-bold text-emerald-800">
+          {t('app.name')}
+        </Link>
+        <div className="flex flex-wrap items-center gap-4 text-sm font-medium text-stone-700">
+          <Link href="/book" className="hover:text-emerald-800">
+            {t('nav.book')}
+          </Link>
+          {signedIn ? (
+            <>
+              <Link href="/bookings" className="hover:text-emerald-800">
+                {t('nav.bookings')}
+              </Link>
+              <Link href="/account" className="hover:text-emerald-800">
+                {t('nav.account')}
+              </Link>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="hover:text-emerald-800"
+              >
+                {t('nav.signOut')}
+              </button>
+            </>
+          ) : (
+            state.status === 'signedOut' && (
+              <Link href="/login" className="hover:text-emerald-800">
+                {t('nav.signIn')}
+              </Link>
+            )
+          )}
+        </div>
+      </nav>
+    </header>
+  );
+}
