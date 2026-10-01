@@ -296,31 +296,65 @@ export class ChapaClient {
 }
 
 /**
- * The status of our transfer in a verify answer: `data` itself, or — should
- * Chapa answer with a list — the entry carrying our reference. Empty if
- * there is none to read.
+ * The status of our transfer in a verify answer. Chapa's docs do not pin
+ * the shape down, so besides `data` being the transfer itself, the entry
+ * carrying our reference is looked for in lists — nested ones and JSON text
+ * included. Empty if there is none to read.
  */
 function transferStatusOf(data: unknown, reference: string): string {
-  const record = Array.isArray(data)
-    ? data.find((item) => isObject(item) && item.reference === reference)
-    : data;
+  const itself = typeof data === 'string' ? parseJson(data) : data;
+  const record = isObject(itself)
+    ? itself
+    : entriesIn(data).find((entry) => entry.reference === reference);
 
-  return isObject(record) && typeof record.status === 'string' ? record.status.toLowerCase() : '';
+  return record && typeof record.status === 'string' ? record.status.toLowerCase() : '';
+}
+
+/** Every record inside a list, however nested or encoded as JSON text. */
+function entriesIn(value: unknown, depth = 0): Array<Record<string, unknown>> {
+  if (depth > 3) {
+    return [];
+  }
+
+  if (typeof value === 'string') {
+    return entriesIn(parseJson(value), depth + 1);
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => entriesIn(item, depth + 1));
+  }
+
+  return isObject(value) ? [value] : [];
 }
 
 /** Describes an unexpected answer by its structure alone, never its values. */
-function shapeOf(data: unknown): string {
-  if (Array.isArray(data)) {
-    const first: unknown = data[0];
-    return `a list of ${data.length}${isObject(first) ? `, fields ${Object.keys(first).join(',')}` : ''}`;
+function shapeOf(value: unknown, depth = 0): string {
+  if (Array.isArray(value)) {
+    const inner = value.length > 0 && depth < 3 ? ` [first: ${shapeOf(value[0], depth + 1)}]` : '';
+    return `a list of ${value.length}${inner}`;
   }
 
-  if (isObject(data)) {
-    const status = data.status === null ? 'null' : typeof data.status;
-    return `fields ${Object.keys(data).join(',')}; status is ${status}`;
+  if (isObject(value)) {
+    const status = value.status === null ? 'null' : typeof value.status;
+    return `fields ${Object.keys(value).join(',')}; status is ${status}`;
   }
 
-  return typeof data;
+  if (typeof value === 'string') {
+    const parsed = parseJson(value);
+    return parsed === undefined || depth >= 3
+      ? `text of ${value.length} characters`
+      : `JSON text holding ${shapeOf(parsed, depth + 1)}`;
+  }
+
+  return value === null ? 'null' : typeof value;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
