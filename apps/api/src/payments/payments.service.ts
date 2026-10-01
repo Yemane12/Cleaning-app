@@ -192,11 +192,18 @@ export class PaymentsService {
     }
 
     const amountMinor = payment.refundDueMinor ?? 0;
+    const booking = await this.prisma.booking.findUniqueOrThrow({
+      where: { id: payment.bookingId },
+      select: { reference: true },
+    });
 
     try {
-      await this.chapa.refund(payment.txRef, amountMinor, {
+      // Chapa refunds by its own reference for the charge, read back when
+      // the payment was verified. One refund per payment, so the booking
+      // reference names it, within Chapa's 36 characters.
+      await this.chapa.refund(payment.chapaReference ?? payment.txRef, amountMinor, {
         reason: 'Booking cancelled',
-        reference: `rf-${payment.id}`,
+        reference: `rf-${booking.reference}`,
       });
     } catch (error) {
       const definite = error instanceof ChapaError && error.definite;

@@ -169,17 +169,26 @@ export class ChapaClient {
     }
   }
 
-  /** Refunds part or all of a paid transaction. */
+  /**
+   * Refunds part or all of a paid transaction, named by Chapa's own
+   * reference for it (e.g. "APezQ1KKswbb" in Chapa's docs). `reference` is
+   * ours for this refund: Chapa holds it unique per business, so a resend
+   * can never refund twice.
+   *
+   * No `meta`: it is optional, and live, Chapa refused a refund whose meta
+   * was JSON text ("Meta must be a valid JSON") although its docs show it
+   * as form fields. Nothing here needs it back.
+   */
   async refund(
-    txRef: string,
+    chapaReference: string,
     amountMinor: number,
     { reason, reference }: { reason: string; reference: string },
   ): Promise<void> {
-    await this.call('POST', `/refund/${encodeURIComponent(txRef)}`, {
+    await this.call('POST', `/refund/${encodeURIComponent(chapaReference)}`, {
       form: {
         amount: toChapaAmount(amountMinor),
         reason,
-        meta: JSON.stringify({ reference }),
+        reference,
       },
     });
   }
