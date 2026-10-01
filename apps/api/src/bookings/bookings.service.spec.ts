@@ -708,6 +708,20 @@ describe('BookingsService', () => {
       expect(theirs).not.toHaveProperty('checkoutUrl');
     });
 
+    // Each side may see the other's name, never their email or phone.
+    it("shows the other party's name and nothing else about them", async () => {
+      prisma.booking.findUnique.mockResolvedValue(stored());
+      await bookings.findOne(customer, 'bk-1');
+      await bookings.list(customer, { take: 25, skip: 0 });
+
+      const detail = prisma.booking.findUnique.mock.calls[0][0].include;
+      expect(detail.cleaner).toEqual({ select: { fullName: true } });
+      expect(detail.customer).toEqual({ select: { fullName: true } });
+      expect(prisma.booking.findMany.mock.calls[0][0].include.cleaner).toEqual({
+        select: { fullName: true },
+      });
+    });
+
     it('keeps unpaid requests out of the cleaner list, even when filtering by status', async () => {
       await bookings.list(cleaner, {
         status: BookingStatus.PENDING_PAYMENT,

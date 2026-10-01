@@ -223,7 +223,8 @@ model Address {
   line1     String
   line2     String?
   city      String
-  postcode  String
+  /// Optional: many Ethiopian addresses have none.
+  postcode  String?
   country   String  @default("ET")
   notes     String?
   isDefault Boolean @default(false)

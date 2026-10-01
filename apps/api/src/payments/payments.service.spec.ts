@@ -128,7 +128,7 @@ describe('PaymentsService', () => {
           txRef: 'bk-b1',
           amountMinor: 400_000,
           currency: 'ETB',
-          returnUrl: 'https://app.example.test/paid',
+          returnUrl: 'https://app.example.test/paid?booking=b1',
           callbackUrl: 'https://api.example.test/api/v1/payments/chapa/callback',
           title: 'Cleaning',
         }),

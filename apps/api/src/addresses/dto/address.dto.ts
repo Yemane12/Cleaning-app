@@ -19,9 +19,11 @@ export class CreateAddressDto {
   @Length(1, 100)
   city!: string;
 
+  /** Optional: many Ethiopian addresses have none. */
+  @IsOptional()
   @IsString()
   @Length(1, 12)
-  postcode!: string;
+  postcode?: string;
 
   @IsOptional()
   @IsString()

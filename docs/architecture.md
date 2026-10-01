@@ -159,6 +159,7 @@ regulated decision that is not recorded must not take effect.
 | --- | --- | --- |
 | `GET` | `/api/v1/health` | public |
 | `GET` | `/api/v1/auth/me` | any authenticated user |
+| `PATCH` | `/api/v1/auth/me` | any authenticated user (own name and phone only) |
 | `PATCH` | `/api/v1/auth/users/:id/role` | `ADMIN` |
 | `POST` | `/api/v1/kyc/documents/upload-url` | `CLEANER` |
 | `POST` | `/api/v1/kyc/documents/:id/confirm` | `CLEANER` |
@@ -174,6 +175,7 @@ regulated decision that is not recorded must not take effect.
 | `GET` `POST` `PATCH` `DELETE` | `/api/v1/addresses…` | owner |
 | `GET` `PUT` | `/api/v1/availability` | `CLEANER` |
 | `GET` `POST` `DELETE` | `/api/v1/availability/exceptions…` | `CLEANER` |
+| `GET` | `/api/v1/cleaners` | any authenticated user (bookable cleaners: name, bio, time zone) |
 | `GET` | `/api/v1/cleaners/:cleanerId/slots` | any authenticated user |
 | `POST` | `/api/v1/bookings` | `CUSTOMER` |
 | `GET` | `/api/v1/bookings`, `/api/v1/bookings/:id` | participants |

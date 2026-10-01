@@ -123,6 +123,18 @@ describe('RBAC (HTTP)', () => {
     await as('admin', 'get', '/api/v1/payments/banks').expect(403);
   });
 
+  it('lets any signed-in user list the cleaners who can be booked', async () => {
+    for (const role of ['customer', 'cleaner', 'admin'] as const) {
+      await as(role, 'get', '/api/v1/cleaners').expect(200, []);
+    }
+  });
+
+  // A profile update must never become a way to change one's own role.
+  it('accepts only a name and phone on a profile update', async () => {
+    await as('customer', 'patch', '/api/v1/auth/me').send({ role: 'ADMIN' }).expect(400);
+    await as('customer', 'patch', '/api/v1/auth/me').send({ phone: 'call me' }).expect(400);
+  });
+
   it('only lets a customer register as a cleaner', async () => {
     await as('cleaner', 'post', '/api/v1/auth/me/become-cleaner').expect(403);
     await as('admin', 'post', '/api/v1/auth/me/become-cleaner').expect(403);

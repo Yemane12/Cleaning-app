@@ -4,6 +4,7 @@ import { AddressesModule } from './addresses/addresses.module';
 import { AuthModule } from './auth/auth.module';
 import { AvailabilityModule } from './availability/availability.module';
 import { BookingsModule } from './bookings/bookings.module';
+import { CleanersModule } from './cleaners/cleaners.module';
 import { HealthController } from './health.controller';
 import { KycModule } from './kyc/kyc.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -23,6 +24,7 @@ import { validateEnv } from './config/env.validation';
     ServicesModule,
     AddressesModule,
     AvailabilityModule,
+    CleanersModule,
     BookingsModule,
     PaymentsModule,
     PaymentWebhookModule,

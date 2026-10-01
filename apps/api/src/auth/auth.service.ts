@@ -8,6 +8,7 @@ import {
 import { Prisma, User, UserRole, UserStatus } from '@prisma/client';
 import { OPEN_STATUSES } from '../bookings/booking-state';
 import { PrismaService } from '../prisma/prisma.service';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { SupabaseJwtPayload } from './interfaces/supabase-jwt-payload.interface';
 
@@ -66,6 +67,7 @@ export class AuthService {
           id: payload.sub,
           email,
           phone: payload.phone || null,
+          fullName: nameHint(payload.user_metadata),
           role,
           ...(role === UserRole.CLEANER ? { cleanerProfile: { create: {} } } : {}),
         },
@@ -85,6 +87,19 @@ export class AuthService {
 
       throw error;
     }
+  }
+
+  /** The caller changes their own name or phone; nothing that grants access. */
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(dto.fullName !== undefined ? { fullName: dto.fullName.trim() } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      },
+    });
+
+    return this.getProfile(userId);
   }
 
   private readRoleHint(value: unknown): UserRole {
@@ -192,4 +207,19 @@ export class AuthService {
       },
     });
   }
+}
+
+/**
+ * The name given at sign-up, which Supabase keeps in client-writable
+ * `user_metadata`. Fine for a display name — unlike a role, it grants
+ * nothing — and editable later through PATCH /auth/me.
+ */
+function nameHint(metadata: Record<string, unknown> | undefined): string | null {
+  const value = metadata?.full_name ?? metadata?.name;
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const name = value.trim().slice(0, 100);
+  return name.length >= 2 ? name : null;
 }
