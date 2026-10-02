@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { RequireAuth } from '@/components/RequireAuth';
+import { RequireRole } from '@/components/RequireRole';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Alert, Loading, PageTitle } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
@@ -12,9 +12,9 @@ import type { BookingListItem } from '@/lib/types';
 
 export default function BookingsPage() {
   return (
-    <RequireAuth>
+    <RequireRole role="CUSTOMER">
       <BookingList />
-    </RequireAuth>
+    </RequireRole>
   );
 }
 

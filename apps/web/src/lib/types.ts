@@ -12,6 +12,93 @@ export interface Profile {
   fullName: string | null;
   role: Role;
   status: string;
+  /** Present for a cleaner. */
+  cleanerProfile?: CleanerProfile | null;
+}
+
+export type KycStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'IN_REVIEW' | 'APPROVED' | 'REJECTED';
+
+export interface CleanerProfile {
+  id: string;
+  kycStatus: KycStatus;
+  kycSubmittedAt: string | null;
+  kycReviewedAt: string | null;
+  payoutsEnabled: boolean;
+  bio: string | null;
+  timeZone: string;
+}
+
+export type KycDocumentType = 'ID_FRONT' | 'ID_BACK' | 'SELFIE' | 'PROOF_OF_ADDRESS';
+export type KycDocumentStatus = 'PENDING_UPLOAD' | 'UPLOADED' | 'VERIFIED' | 'REJECTED';
+
+export interface KycDocument {
+  id: string;
+  type: KycDocumentType;
+  status: KycDocumentStatus;
+  uploadedAt: string | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+}
+
+/** A cleaner's identity check, and what an upload may be. */
+export interface KycOverview {
+  status: KycStatus;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+  /** Newest first. */
+  documents: KycDocument[];
+  missingDocumentTypes: KycDocumentType[];
+  requiredDocumentTypes: KycDocumentType[];
+  allowedContentTypes: string[];
+  maxFileSizeBytes: number;
+}
+
+/** Where to send one file: a short-lived signed PUT straight to storage. */
+export interface UploadTicket {
+  documentId: string;
+  url: string;
+  method: 'PUT';
+  /** Part of the signature: sent exactly as given. */
+  requiredHeaders: Record<string, string>;
+  expiresAt: string;
+}
+
+/** A bank or mobile wallet Chapa can send money to. */
+export interface Bank {
+  code: number;
+  name: string;
+  isMobileMoney: boolean;
+  /** Digits in an account number, when known. */
+  accountLength: number | null;
+  currency: string;
+}
+
+export interface PayoutAccount {
+  payoutsEnabled: boolean;
+  bankCode: number | null;
+  bankName: string | null;
+  accountName: string | null;
+  accountNumberLast4: string | null;
+}
+
+/** A weekly window: 0 = Sunday … 6 = Saturday, minutes from local midnight. */
+export interface AvailabilityWindow {
+  weekday: number;
+  startMinute: number;
+  endMinute: number;
+}
+
+export interface WeeklyAvailability {
+  timeZone: string;
+  windows: AvailabilityWindow[];
+}
+
+export interface TimeOff {
+  id: string;
+  startsAt: string;
+  endsAt: string;
+  reason: string | null;
 }
 
 export interface Service {
@@ -79,6 +166,8 @@ export type PaymentStatus =
 
 export type RefundStatus = 'NONE' | 'PENDING' | 'DONE' | 'NEEDS_REVIEW';
 
+export type PayoutStatus = 'NOT_DUE' | 'PENDING' | 'SENT' | 'PAID' | 'FAILED';
+
 export interface PaymentSummary {
   status: PaymentStatus;
   amountMinor: number;
@@ -88,6 +177,15 @@ export interface PaymentSummary {
   refund: { status: RefundStatus; dueMinor: number | null; refundedMinor: number };
   /** Present for the paying customer while the booking is unpaid. */
   checkoutUrl?: string;
+  /** The cleaner's side, for the booking's cleaner only. */
+  payout?: {
+    status: PayoutStatus;
+    /** What was settled; null until the booking ends. */
+    amountMinor: number | null;
+    /** What completing the clean pays. */
+    expectedMinor: number;
+    paidOutAt: string | null;
+  };
 }
 
 export interface BookingListItem {
@@ -101,13 +199,16 @@ export interface BookingListItem {
   currency: string;
   service: { slug: string; name: string };
   cleaner: { fullName: string | null };
+  customer: { fullName: string | null };
+  /** The area only, in a list. */
+  address: { city: string };
+  payment: PaymentSummary | null;
 }
 
-export interface Booking extends BookingListItem {
+export interface Booking extends Omit<BookingListItem, 'address'> {
   customerNotes: string | null;
   cancellationReason: string | null;
   address: { line1: string; line2: string | null; city: string; postcode: string | null };
-  payment: PaymentSummary | null;
   /** Whether cancelling now is free (outside the last 24 hours before the start). */
   freeCancellation: boolean;
 }

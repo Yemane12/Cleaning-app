@@ -123,6 +123,16 @@ export function Alert({
   );
 }
 
+/** One labelled fact, inside a <dl>. */
+export function Detail({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <dt className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</dt>
+      <dd className="mt-1 text-stone-900">{children}</dd>
+    </div>
+  );
+}
+
 export function PageTitle({ children }: { children: React.ReactNode }) {
   return <h1 className="text-2xl font-bold tracking-tight text-stone-900">{children}</h1>;
 }

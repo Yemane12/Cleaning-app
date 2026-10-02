@@ -2,16 +2,25 @@ import { publicEnv } from './env';
 import { accessToken } from './supabase';
 import type {
   Address,
+  AvailabilityWindow,
+  Bank,
   Booking,
   BookingListItem,
   Cleaner,
+  CleanerProfile,
   CreatedBooking,
+  KycDocumentType,
+  KycOverview,
   NewAddress,
   PaymentSummary,
+  PayoutAccount,
   Profile,
   Quote,
   Service,
   Slot,
+  TimeOff,
+  UploadTicket,
+  WeeklyAvailability,
 } from './types';
 
 /** A refusal from the API, carrying its message for the user. */
@@ -25,7 +34,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = 'GET' | 'POST' | 'PATCH';
+type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
 export interface RequestOptions {
   method?: Method;
@@ -117,4 +126,45 @@ export const api = {
       method: 'PATCH',
       body: reason ? { reason } : {},
     }),
+
+  // ── Cleaners ──────────────────────────────────────────────────────────────
+
+  becomeCleaner: () => request<Profile>('/auth/me/become-cleaner', { method: 'POST' }),
+  updateCleanerProfile: (bio: string) =>
+    request<Pick<CleanerProfile, 'bio' | 'timeZone'>>('/cleaners/me', {
+      method: 'PATCH',
+      body: { bio },
+    }),
+
+  kyc: () => request<KycOverview>('/kyc/status'),
+  kycUploadTicket: (file: {
+    documentType: KycDocumentType;
+    contentType: string;
+    fileSize: number;
+  }) => request<UploadTicket>('/kyc/documents/upload-url', { method: 'POST', body: file }),
+  kycConfirm: (documentId: string) =>
+    request<unknown>(`/kyc/documents/${documentId}/confirm`, { method: 'POST' }),
+
+  banks: () => request<Bank[]>('/payments/banks'),
+  payoutAccount: () => request<PayoutAccount>('/payments/payout-account'),
+  setPayoutAccount: (account: { bankCode: number; accountNumber: string; accountName: string }) =>
+    request<PayoutAccount>('/payments/payout-account', { method: 'PUT', body: account }),
+
+  availability: () => request<WeeklyAvailability>('/availability'),
+  setAvailability: (windows: AvailabilityWindow[]) =>
+    request<WeeklyAvailability>('/availability', { method: 'PUT', body: { windows } }),
+  timeOff: () => request<TimeOff[]>('/availability/exceptions'),
+  addTimeOff: (timeOff: { startsAt: string; endsAt: string; reason?: string }) =>
+    request<TimeOff>('/availability/exceptions', { method: 'POST', body: timeOff }),
+  removeTimeOff: (id: string) =>
+    request<null>(`/availability/exceptions/${id}`, { method: 'DELETE' }),
+
+  accept: (id: string) => request<unknown>(`/bookings/${id}/accept`, { method: 'PATCH' }),
+  decline: (id: string, reason?: string) =>
+    request<unknown>(`/bookings/${id}/decline`, {
+      method: 'PATCH',
+      body: reason ? { reason } : {},
+    }),
+  start: (id: string) => request<unknown>(`/bookings/${id}/start`, { method: 'PATCH' }),
+  complete: (id: string) => request<unknown>(`/bookings/${id}/complete`, { method: 'PATCH' }),
 };

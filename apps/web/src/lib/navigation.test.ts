@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { safeNext } from './navigation';
+import { homeFor, safeNext } from './navigation';
 
 describe('safeNext', () => {
   it('keeps a path on this site', () => {
@@ -14,5 +14,13 @@ describe('safeNext', () => {
 
   it('falls back when nothing was asked for', () => {
     expect(safeNext(null)).toBe('/book');
+  });
+});
+
+describe('homeFor', () => {
+  it('sends a cleaner to their dashboard and anyone else to booking', () => {
+    expect(homeFor('CLEANER')).toBe('/cleaner');
+    expect(homeFor('CUSTOMER')).toBe('/book');
+    expect(homeFor(undefined)).toBe('/book');
   });
 });
