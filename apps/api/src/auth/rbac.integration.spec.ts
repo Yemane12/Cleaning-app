@@ -129,6 +129,25 @@ describe('RBAC (HTTP)', () => {
     }
   });
 
+  // Only a cleaner has a public profile; it takes a bio and nothing else.
+  it('lets only a cleaner edit their bio, and nothing but the bio', async () => {
+    prismaStub.cleanerProfile.update.mockResolvedValueOnce({
+      bio: 'Ten years in Bole',
+      timeZone: 'Africa/Addis_Ababa',
+    });
+    await as('cleaner', 'patch', '/api/v1/cleaners/me')
+      .send({ bio: 'Ten years in Bole' })
+      .expect(200, { bio: 'Ten years in Bole', timeZone: 'Africa/Addis_Ababa' });
+
+    await as('customer', 'patch', '/api/v1/cleaners/me').send({ bio: 'x' }).expect(403);
+    await as('cleaner', 'patch', '/api/v1/cleaners/me')
+      .send({ bio: 'x', kycStatus: 'APPROVED' })
+      .expect(400);
+    await as('cleaner', 'patch', '/api/v1/cleaners/me')
+      .send({ bio: 'x'.repeat(501) })
+      .expect(400);
+  });
+
   // A profile update must never become a way to change one's own role.
   it('accepts only a name and phone on a profile update', async () => {
     await as('customer', 'patch', '/api/v1/auth/me').send({ role: 'ADMIN' }).expect(400);

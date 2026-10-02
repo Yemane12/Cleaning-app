@@ -102,6 +102,30 @@ describe('KycService', () => {
     fileSize: 1024,
   };
 
+  describe('getStatus', () => {
+    it('says what is missing and what an upload may be, so a client can check first', async () => {
+      prisma.cleanerProfile.findUnique.mockResolvedValue({
+        id: 'p1',
+        kycStatus: KycStatus.IN_PROGRESS,
+      });
+      prisma.kycDocument.findMany.mockResolvedValue([
+        { id: 'd1', type: KycDocumentType.ID_FRONT, status: KycDocumentStatus.UPLOADED },
+        { id: 'd2', type: KycDocumentType.SELFIE, status: KycDocumentStatus.PENDING_UPLOAD },
+      ]);
+
+      const status = await service.getStatus(cleaner.id);
+
+      expect(status.missingDocumentTypes).toEqual(
+        REQUIRED_DOCUMENT_TYPES.filter((type) => type !== KycDocumentType.ID_FRONT),
+      );
+      expect(status.requiredDocumentTypes).toEqual(REQUIRED_DOCUMENT_TYPES);
+      expect(status.allowedContentTypes).toEqual(
+        expect.arrayContaining(['image/jpeg', 'image/png', 'application/pdf']),
+      );
+      expect(status.maxFileSizeBytes).toBe(10 * 1024 * 1024);
+    });
+  });
+
   describe('requestUploadUrl', () => {
     it('scopes the object key to the owning user and document type', async () => {
       prisma.cleanerProfile.findUnique.mockResolvedValue({

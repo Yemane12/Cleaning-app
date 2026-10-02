@@ -11,7 +11,7 @@ import {
   isFailedStatus,
 } from './chapa.client';
 import { messageOf, toHttpError } from './chapa-errors';
-import { FeePolicy, Settlement } from './payment-math';
+import { FeePolicy, Settlement, settleCompleted } from './payment-math';
 
 /** What a signed Chapa notification says about one of our transfers. */
 export interface TransferReport {
@@ -41,7 +41,14 @@ export interface PaymentSummary {
   /** Chapa's hosted checkout: the paying customer only, only while unpaid. */
   checkoutUrl?: string;
   /** The cleaner's side: cleaner and admin only. */
-  payout?: { status: PayoutStatus; amountMinor: number | null; paidOutAt: Date | null };
+  payout?: {
+    status: PayoutStatus;
+    /** What was actually settled; null until the booking ends. */
+    amountMinor: number | null;
+    /** What completing the clean pays the cleaner, at today's platform fee. */
+    expectedMinor: number;
+    paidOutAt: Date | null;
+  };
 }
 
 /**
@@ -463,6 +470,7 @@ export class PaymentsService {
             payout: {
               status: payment.payoutStatus,
               amountMinor: payment.payoutMinor,
+              expectedMinor: settleCompleted(payment.amountMinor, this.feePolicy()).payoutMinor,
               paidOutAt: payment.paidOutAt,
             },
           }

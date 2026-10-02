@@ -176,9 +176,10 @@ regulated decision that is not recorded must not take effect.
 | `GET` `PUT` | `/api/v1/availability` | `CLEANER` |
 | `GET` `POST` `DELETE` | `/api/v1/availability/exceptions…` | `CLEANER` |
 | `GET` | `/api/v1/cleaners` | any authenticated user (bookable cleaners: name, bio, time zone) |
+| `PATCH` | `/api/v1/cleaners/me` | `CLEANER` (own bio only) |
 | `GET` | `/api/v1/cleaners/:cleanerId/slots` | any authenticated user |
 | `POST` | `/api/v1/bookings` | `CUSTOMER` |
-| `GET` | `/api/v1/bookings`, `/api/v1/bookings/:id` | participants |
+| `GET` | `/api/v1/bookings`, `/api/v1/bookings/:id` | participants (payment summary; payout side and expected earnings: the cleaner) |
 | `PATCH` | `/api/v1/bookings/:id/{accept,decline,start,complete}` | assigned `CLEANER` |
 | `PATCH` | `/api/v1/bookings/:id/cancel` | either participant |
 | `GET` | `/api/v1/bookings/:id/payment` | participants (checkout link: paying customer only) |
