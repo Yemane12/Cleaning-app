@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
-import { KycStatus, UserRole, UserStatus } from '@prisma/client';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { KycStatus, Prisma, UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { UpdateCleanerProfileDto } from './dto/update-cleaner-profile.dto';
 
 /** A cleaner as customers see them: no contact details, nothing private. */
 export interface PublicCleaner {
@@ -10,6 +11,12 @@ export interface PublicCleaner {
   name: string | null;
   bio: string | null;
   /** The zone their slots are offered in. */
+  timeZone: string;
+}
+
+/** The editable part of a cleaner's own profile. */
+export interface CleanerProfileView {
+  bio: string | null;
   timeZone: string;
 }
 
@@ -47,5 +54,23 @@ export class CleanersService {
       bio: profile.bio,
       timeZone: profile.timeZone,
     }));
+  }
+
+  async updateOwnProfile(
+    userId: string,
+    dto: UpdateCleanerProfileDto,
+  ): Promise<CleanerProfileView> {
+    try {
+      return await this.prisma.cleanerProfile.update({
+        where: { userId },
+        data: { bio: dto.bio.trim() || null },
+        select: { bio: true, timeZone: true },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        throw new NotFoundException('No cleaner profile exists for this account');
+      }
+      throw error;
+    }
   }
 }

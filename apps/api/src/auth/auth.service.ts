@@ -202,6 +202,8 @@ export class AuthService {
             kycSubmittedAt: true,
             kycReviewedAt: true,
             payoutsEnabled: true,
+            bio: true,
+            timeZone: true,
           },
         },
       },

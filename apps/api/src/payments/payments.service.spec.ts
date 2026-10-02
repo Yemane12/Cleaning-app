@@ -619,5 +619,17 @@ describe('PaymentsService', () => {
         'payout',
       );
     });
+
+    it('tells the cleaner what completing the clean will pay, before it is settled', () => {
+      const summary = service.summarize(
+        payment({ status: PaymentStatus.PAID, amountMinor: 100_000, payoutMinor: null }),
+        { payout: true, checkout: false },
+      );
+
+      // 15% platform fee in this suite's config.
+      expect(summary.payout).toEqual(
+        expect.objectContaining({ amountMinor: null, expectedMinor: 85_000 }),
+      );
+    });
   });
 });

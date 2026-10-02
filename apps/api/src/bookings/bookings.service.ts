@@ -326,7 +326,7 @@ export class BookingsService {
             { cleanerId: actor.id, status: { not: BookingStatus.PENDING_PAYMENT } }
           : { customerId: actor.id };
 
-    return this.prisma.booking.findMany({
+    const bookings = await this.prisma.booking.findMany({
       where: {
         // AND, so a status filter narrows the scope instead of replacing it.
         AND: [
@@ -345,11 +345,27 @@ export class BookingsService {
       include: {
         service: { select: { slug: true, name: true } },
         cleaner: { select: { fullName: true } },
+        customer: { select: { fullName: true } },
+        // The area is enough for a list; the full address is on the booking.
+        address: { select: { city: true } },
+        payment: true,
       },
       orderBy: { scheduledStart: 'asc' },
       take: query.take,
       skip: query.skip,
     });
+
+    // The same visibility as a single booking, so a cleaner's list can show
+    // what each clean pays. The checkout link stays on the booking itself.
+    return bookings.map(({ payment, ...booking }) => ({
+      ...booking,
+      payment: payment
+        ? this.payments.summarize(payment, {
+            payout: this.seesPayout(actor, booking),
+            checkout: false,
+          })
+        : null,
+    }));
   }
 
   /**

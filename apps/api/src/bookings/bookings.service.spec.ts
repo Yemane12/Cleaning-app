@@ -717,9 +717,24 @@ describe('BookingsService', () => {
       const detail = prisma.booking.findUnique.mock.calls[0][0].include;
       expect(detail.cleaner).toEqual({ select: { fullName: true } });
       expect(detail.customer).toEqual({ select: { fullName: true } });
-      expect(prisma.booking.findMany.mock.calls[0][0].include.cleaner).toEqual({
-        select: { fullName: true },
-      });
+      const list = prisma.booking.findMany.mock.calls[0][0].include;
+      expect(list.cleaner).toEqual({ select: { fullName: true } });
+      expect(list.customer).toEqual({ select: { fullName: true } });
+      // A list shows the area only.
+      expect(list.address).toEqual({ select: { city: true } });
+    });
+
+    it("lists each booking's payment, with the payout side for its cleaner only", async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        stored({ payment: paymentRow({ checkoutUrl: 'https://checkout.chapa.co/x' }) }),
+      ]);
+
+      const [forCleaner] = await bookings.list(cleaner, { take: 25, skip: 0 });
+      const [forCustomer] = await bookings.list(customer, { take: 25, skip: 0 });
+
+      expect(forCleaner.payment).toEqual({ status: PaymentStatus.PAID, payout: {} });
+      expect(forCleaner).not.toHaveProperty('payment.checkoutUrl');
+      expect(forCustomer.payment).toEqual({ status: PaymentStatus.PAID });
     });
 
     it('keeps unpaid requests out of the cleaner list, even when filtering by status', async () => {

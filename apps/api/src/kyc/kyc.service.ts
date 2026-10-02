@@ -186,6 +186,10 @@ export class KycService {
       // Object keys are deliberately omitted; clients address documents by id.
       documents,
       missingDocumentTypes: REQUIRED_DOCUMENT_TYPES.filter((type) => !satisfied.has(type)),
+      // What requestUploadUrl accepts, so a client can say so before uploading.
+      requiredDocumentTypes: REQUIRED_DOCUMENT_TYPES,
+      allowedContentTypes: Object.keys(ALLOWED_DOCUMENT_MIME_TYPES),
+      maxFileSizeBytes: this.config.get('KYC_MAX_FILE_SIZE_BYTES', { infer: true }),
     };
   }
 
