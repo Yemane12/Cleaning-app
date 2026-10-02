@@ -48,4 +48,21 @@ describe('time', () => {
   it('shows a calendar date as itself, whatever the zone', () => {
     expect(formatDay('2026-10-04', 'en-GB')).toBe('Sun 4 Oct');
   });
+
+  // Amharic reads dates on the Ethiopian calendar: 4 October 2026 is 24 Meskerem 2019.
+  describe('in Amharic', () => {
+    const AMHARIC = 'am-ET-u-ca-ethiopic';
+
+    it('shows dates on the Ethiopian calendar', () => {
+      expect(formatDay('2026-10-04', AMHARIC)).toMatch(/^እሑድ[፣,] መስከረም 24$/u);
+      expect(formatDateTime('2026-10-10T06:00:00.000Z', AMHARIC, ADDIS)).toMatch(
+        /^ቅዳሜ[፣,] መስከረም 30[፣,]? 9:00 ጥዋት$/u,
+      );
+    });
+
+    it('shows times on the 12-hour clock phones show', () => {
+      expect(formatTime('2026-10-04T05:30:00.000Z', AMHARIC, ADDIS)).toBe('8:30 ጥዋት');
+      expect(formatMinutes(13 * 60, AMHARIC)).toBe('1:00 ከሰዓት');
+    });
+  });
 });

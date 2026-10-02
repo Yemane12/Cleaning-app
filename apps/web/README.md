@@ -66,11 +66,23 @@ to use a browser already on the machine, set `PLAYWRIGHT_CHROMIUM_PATH`.
 
 ## Languages
 
-Every piece of text is in `src/i18n/messages/en.ts`. To add Amharic:
+The app speaks English (`src/i18n/messages/en.ts`) and Amharic
+(`src/i18n/messages/am.ts`). It starts in the phone's or browser's language
+when that is Amharic, else English; the switch in the header changes it, and
+the choice is remembered on that device.
 
-1. Create `src/i18n/messages/am.ts` exporting `am: Messages` with the same keys
-   — the typecheck fails on any missing or misspelt one.
-2. Register it in `src/i18n/locales.ts`:
-   `am: { messages: am, label: 'አማርኛ', intl: 'am-ET' }`.
+- **Dates.** Amharic shows dates on the Ethiopian calendar, e.g. "እሑድ፣ መስከረም
+  24" for Sunday 4 October 2026. Date pickers are the browser's and stay
+  Gregorian, so the chosen day is shown underneath on the Ethiopian calendar.
+- **Times.** Both languages use the 12-hour clock phones show: "8:30 am",
+  "8:30 ጥዋት". Neither counts hours from dawn.
+- **Money.** "ETB 1,150.00" in English, "ብር 1,150.00" in Amharic.
 
-The page font already includes Ge'ez script, for Amharic text and names.
+Service names, addresses and other text people type are shown as entered.
+
+To change wording, edit the messages files. Every language must have every
+key English has, and the same `{placeholders}`; the typecheck and
+`locales.test.ts` fail otherwise. Another language is one more messages file
+and one entry in `src/i18n/locales.ts`.
+
+The page font includes Ge'ez script, for Amharic text and names.

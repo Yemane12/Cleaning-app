@@ -12,6 +12,7 @@ import {
   defaultLocale,
   isLocale,
   locales,
+  preferredLocale,
   translate,
   type Locale,
   type MessageKey,
@@ -43,14 +44,16 @@ function subscribe(listener: () => void) {
   };
 }
 
+/** The language chosen here before, else the one the phone or browser is set to. */
 function savedLocale(): Locale {
+  let saved: string | null = null;
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return isLocale(saved) ? saved : defaultLocale;
+    saved = localStorage.getItem(STORAGE_KEY);
   } catch {
-    // Storage can be unavailable (private mode); the default is fine.
-    return defaultLocale;
+    // Storage can be unavailable (private mode); the device's language will do.
   }
+  if (isLocale(saved)) return saved;
+  return preferredLocale(navigator.languages?.length ? navigator.languages : [navigator.language]);
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {

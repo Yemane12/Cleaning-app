@@ -39,6 +39,7 @@ export const en = {
     saved: 'Saved',
     cancel: 'Cancel',
     optional: 'optional',
+    changeLanguage: 'Change language',
     unnamedCleaner: 'Cleaner',
     duration: '{hours} h {minutes} min',
     durationHours: '{hours} h',

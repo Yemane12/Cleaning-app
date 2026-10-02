@@ -4,7 +4,7 @@ import { Header } from '@/components/Header';
 import { Providers } from '@/components/Providers';
 import './globals.css';
 
-// Latin text, and Ge'ez script for Amharic names and, later, the Amharic UI.
+// Latin text, and Ge'ez script for Amharic names and the Amharic UI.
 const notoSans = Noto_Sans({ variable: '--font-latin', subsets: ['latin'] });
 const notoEthiopic = Noto_Sans_Ethiopic({ variable: '--font-ethiopic', subsets: ['ethiopic'] });
 
