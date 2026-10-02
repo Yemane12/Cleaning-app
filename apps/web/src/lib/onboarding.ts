@@ -3,6 +3,20 @@ import type { KycStatus } from './types';
 /** The four things a cleaner sets up before customers can book them. */
 export type StepId = 'profile' | 'documents' | 'payout' | 'hours';
 
+/** The order setup walks through, and the page for each step. */
+export const STEP_ORDER: StepId[] = ['profile', 'documents', 'payout', 'hours'];
+
+export const STEP_LINKS: Record<StepId, string> = {
+  profile: '/cleaner/profile',
+  documents: '/cleaner/documents',
+  payout: '/cleaner/payout',
+  hours: '/cleaner/schedule',
+};
+
+export function isStepId(value: unknown): value is StepId {
+  return typeof value === 'string' && (STEP_ORDER as string[]).includes(value);
+}
+
 export type StepState = 'todo' | 'waiting' | 'done' | 'problem';
 
 export interface OnboardingStep {
@@ -49,4 +63,18 @@ export function onboardingOf(setup: CleanerSetup): Onboarding {
     steps,
     bookable: setup.kycStatus === 'APPROVED' && setup.payoutsEnabled && setup.weeklyWindows > 0,
   };
+}
+
+/**
+ * Where to go once `finished` is saved: the next step still to do, else an
+ * earlier one left undone, else none (setup is complete). A step waiting on
+ * review needs nothing from the cleaner, so it is passed over.
+ */
+export function nextStepAfter(finished: StepId, onboarding: Onboarding): StepId | null {
+  const open = (id: StepId) => {
+    const state = onboarding.steps.find((step) => step.id === id)?.state;
+    return state === 'todo' || state === 'problem';
+  };
+  const index = STEP_ORDER.indexOf(finished);
+  return STEP_ORDER.slice(index + 1).find(open) ?? STEP_ORDER.slice(0, index).find(open) ?? null;
 }

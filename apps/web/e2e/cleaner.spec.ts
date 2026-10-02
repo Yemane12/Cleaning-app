@@ -47,21 +47,26 @@ test('a customer joins as a cleaner and is shown what to set up', async ({ page,
   expect(errors).toEqual([]);
 });
 
-test('a new cleaner sets up profile, documents, payout and hours', async ({ page, context }) => {
+test('a new cleaner is walked through profile, documents, payout and hours', async ({
+  page,
+  context,
+}) => {
   const backend = new FakeBackend();
   backend.role = 'CLEANER';
   await backend.install(context, { signedIn: true });
   const errors = watchErrors(page);
 
-  // Profile: what customers read.
+  // Profile: what customers read. Saving moves on to the next step.
   await page.goto('/cleaner/profile');
+  await expect(page.getByText('Step 1 of 4')).toBeVisible();
   await page.getByLabel('About you').fill('Ten years cleaning homes in Bole and CMC.');
   await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/cleaner\/documents\?done=profile$/);
   await expect(page.getByText('Your profile is saved.')).toBeVisible();
+  await expect(page.getByText('Step 2 of 4')).toBeVisible();
   expect(backend.bio).toBe('Ten years cleaning homes in Bole and CMC.');
 
   // Documents: each goes straight to storage with its signed link, then is confirmed.
-  await page.goto('/cleaner/documents');
   await expect(page.getByText('Upload all four documents')).toBeVisible();
   // A file the API would refuse is stopped here, before anything is sent.
   await page
@@ -76,7 +81,6 @@ test('a new cleaner sets up profile, documents, payout and hours', async ({ page
     ['ID, front', 'id-front.jpg'],
     ['ID, back', 'id-back.jpg'],
     ['Selfie', 'selfie.jpg'],
-    ['Proof of address', 'bill.jpg'],
   ];
   for (const [title, file] of documents) {
     const row = page.getByRole('listitem').filter({ hasText: title });
@@ -84,9 +88,14 @@ test('a new cleaner sets up profile, documents, payout and hours', async ({ page
     await expect(page.getByText(`${title}: uploaded.`)).toBeVisible();
     await expect(row).toContainText('Uploaded');
   }
-  await expect(page.getByText('We are checking your documents')).toBeVisible();
-  // Locked while checked: no more upload buttons.
-  await expect(page.locator('input[type=file]')).toHaveCount(0);
+  // The last one sends the set for checking, and moves on.
+  await page
+    .getByRole('listitem')
+    .filter({ hasText: 'Proof of address' })
+    .locator('input[type=file]')
+    .setInputFiles(photo('bill.jpg'));
+  await expect(page).toHaveURL(/\/cleaner\/payout\?done=documents$/);
+  await expect(page.getByText('Your documents are uploaded and sent for checking.')).toBeVisible();
   expect(backend.kycStatus).toBe('IN_REVIEW');
   expect(backend.uploads).toHaveLength(4);
   expect(backend.uploads[0]).toEqual({
@@ -96,34 +105,21 @@ test('a new cleaner sets up profile, documents, payout and hours', async ({ page
   });
 
   // Payout: a telebirr wallet, by its phone number.
-  await page.goto('/cleaner/payout');
   await page.getByLabel('Bank or mobile wallet').selectOption({ label: 'telebirr' });
   await page.getByLabel('Wallet phone number').fill('091234567');
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText('telebirr numbers are 10 digits long.')).toBeVisible();
   await page.getByLabel('Wallet phone number').fill('0912345678');
   await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page.getByText('Saved. Your next pay goes to telebirr.')).toBeVisible();
-  await expect(page.getByText(/account ending 5678/)).toBeVisible();
+  await expect(page).toHaveURL(/\/cleaner\/schedule\?done=payout$/);
+  await expect(page.getByText('Your payout account is saved.')).toBeVisible();
   expect(backend.payout).toEqual({
     bankCode: 855,
     accountNumber: '0912345678',
     accountName: 'Test Customer',
   });
 
-  // Hours: Monday and Tuesday mornings, then a day off.
-  await page.goto('/cleaner/schedule');
-  await page.getByLabel('Monday: Working').check();
-  await page.getByLabel('Tuesday: Working').check();
-  await page.getByLabel('Tuesday Until').selectOption({ label: '12:00' });
-  await expect(page.getByText('13 hours a week')).toBeVisible();
-  await page.getByRole('button', { name: 'Save hours' }).click();
-  await expect(page.getByText('Your hours are saved.')).toBeVisible();
-  expect(backend.windows).toEqual([
-    { weekday: 1, startMinute: 480, endMinute: 1020 },
-    { weekday: 2, startMinute: 480, endMinute: 720 },
-  ]);
-
+  // Time off: whole days, added on the page.
   await page.getByLabel('First day').fill('2026-12-24');
   await page.getByLabel('Last day').fill('2026-12-26');
   await page.getByLabel(/Reason/).fill('Holiday');
@@ -136,15 +132,35 @@ test('a new cleaner sets up profile, documents, payout and hours', async ({ page
     endsAt: '2026-12-26T21:00:00.000Z',
     reason: 'Holiday',
   });
-  await expectNoSidewaysScroll(page);
 
-  // Back on the dashboard: only the identity check is left, and it is with us.
-  await page.goto('/cleaner');
+  // Hours, on the 12-hour clock: Monday 8 am to 5 pm, Tuesday morning.
+  await page.getByLabel('Monday: Working').check();
+  await expect(page.getByLabel('Monday From')).toHaveValue('480');
+  await expect(page.getByLabel('Monday From').locator('option:checked')).toHaveText('8:00 am');
+  await expect(page.getByLabel('Monday Until').locator('option:checked')).toHaveText('5:00 pm');
+  await page.getByLabel('Tuesday: Working').check();
+  await page.getByLabel('Tuesday Until').selectOption({ label: '12:00 pm' });
+  await expect(page.getByText('13 hours a week')).toBeVisible();
+  await expectNoSidewaysScroll(page);
+  await page.getByRole('button', { name: 'Save hours' }).click();
+  // Nothing left to do but wait for the check: back to the dashboard.
+  await expect(page).toHaveURL(/\/cleaner\?done=hours$/);
+  await expect(page.getByText('Your hours are saved.')).toBeVisible();
+  expect(backend.windows).toEqual([
+    { weekday: 1, startMinute: 480, endMinute: 1020 },
+    { weekday: 2, startMinute: 480, endMinute: 720 },
+  ]);
+
   await expect(page.getByRole('link', { name: /Identity check/ })).toContainText('Being checked');
   for (const step of ['Your profile', 'Where we pay you', 'Your hours']) {
     await expect(page.getByRole('link', { name: new RegExp(step) })).toContainText('Done');
   }
   await expect(page.getByText('Customers cannot book you yet.')).toBeVisible();
+
+  // Documents are locked while they are checked.
+  await page.goto('/cleaner/documents');
+  await expect(page.getByText('We are checking your documents')).toBeVisible();
+  await expect(page.locator('input[type=file]')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

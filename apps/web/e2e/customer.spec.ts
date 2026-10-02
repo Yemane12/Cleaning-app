@@ -94,7 +94,8 @@ test('a customer books, pays with Chapa, and cancels for a full refund', async (
   await expect(page.getByText('Price: ETB 1,150.00')).toBeVisible();
 
   await page.getByRole('button', { name: /Hirut Bekele/ }).click();
-  await page.getByRole('button', { name: '06:00' }).click();
+  // Times are on the 12-hour clock.
+  await page.getByRole('button', { name: /^6:00\sam$/ }).click();
 
   const review = page.locator('section', { hasText: 'Check and pay' });
   await expect(review).toContainText('Standard clean with Hirut Bekele');
@@ -111,7 +112,7 @@ test('a customer books, pays with Chapa, and cancels for a full refund', async (
     durationMinutes: 150,
     customerNotes: 'Please bring a mop',
   });
-  // 06:00 in Addis Ababa is 03:00 UTC.
+  // 6:00 am in Addis Ababa is 03:00 UTC.
   expect(backend.created?.scheduledStart).toMatch(/T03:00:00\.000Z$/);
 
   // Back from Chapa: the return page checks the payment.

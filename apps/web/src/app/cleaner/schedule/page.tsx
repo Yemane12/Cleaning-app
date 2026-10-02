@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { BackLink } from '@/components/BackLink';
-import { Alert, Button, Card, Field, Loading, PageTitle } from '@/components/ui';
+import { SetupHeader } from '@/components/SetupHeader';
+import { Alert, Button, Card, Field, Loading } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
 import { useFormat } from '@/lib/format';
@@ -11,7 +11,6 @@ import {
   MINUTES_PER_DAY,
   dayProblem,
   fromWeek,
-  minutesToTime,
   startOfDayIn,
   timeOptions,
   toWeek,
@@ -21,6 +20,7 @@ import {
 } from '@/lib/schedule';
 import { addDays, dateIn } from '@/lib/time';
 import type { TimeOff, WeeklyAvailability } from '@/lib/types';
+import { useNextStep } from '@/lib/use-next-step';
 import { useResource } from '@/lib/use-resource';
 
 /** The cleaner's weekly hours, and days off. */
@@ -43,8 +43,7 @@ export default function SchedulePage() {
 
   return (
     <div className="space-y-6">
-      <BackLink />
-      <PageTitle>{t('cleaner.schedule.title')}</PageTitle>
+      <SetupHeader step="hours" title={t('cleaner.schedule.title')} />
       <p className="text-stone-600">{t('cleaner.schedule.intro', { zone })}</p>
       <WeekEditor availability={availability} />
       <TimeOffSection
@@ -59,6 +58,7 @@ export default function SchedulePage() {
 function WeekEditor({ availability }: { availability: WeeklyAvailability }) {
   const { t, intlLocale } = useI18n();
   const format = useFormat();
+  const goToNextStep = useNextStep();
   const [week, setWeek] = useState<DaySchedule[]>(() => toWeek(availability.windows));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
@@ -75,12 +75,10 @@ function WeekEditor({ availability }: { availability: WeeklyAvailability }) {
     setBusy(true);
     setMessage(null);
     try {
-      const saved = await api.setAvailability(fromWeek(week));
-      setWeek(toWeek(saved.windows));
-      setMessage({ tone: 'success', text: t('cleaner.schedule.saved') });
+      await api.setAvailability(fromWeek(week));
+      await goToNextStep('hours');
     } catch (failure) {
       setMessage({ tone: 'error', text: format.error(failure) });
-    } finally {
       setBusy(false);
     }
   }
@@ -217,6 +215,8 @@ function TimeSelect({
   value: number;
   onChange: (minutes: number) => void;
 }) {
+  const { t } = useI18n();
+  const format = useFormat();
   return (
     <label className="block space-y-1">
       <span className="text-xs font-medium text-stone-600">{label}</span>
@@ -228,7 +228,8 @@ function TimeSelect({
       >
         {timeOptions(kind).map((minutes) => (
           <option key={minutes} value={minutes}>
-            {minutesToTime(minutes)}
+            {/* The end of the day reads as midnight, not as 12:00 am again. */}
+            {minutes === MINUTES_PER_DAY ? t('cleaner.schedule.midnight') : format.clock(minutes)}
           </option>
         ))}
       </select>

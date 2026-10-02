@@ -40,27 +40,30 @@ export function formatDay(date: string, locale: string): string {
   }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
-/** "06:00" for an instant, in a time zone. */
+/** Times are shown on the 12-hour clock, as people in Ethiopia read them: "6:00 am". */
+const CLOCK = { hour: 'numeric', minute: '2-digit', hourCycle: 'h12' } as const;
+
+/** "6:00 am" for an instant, in a time zone. */
 export function formatTime(iso: string, locale: string, timeZone: string): string {
-  return new Intl.DateTimeFormat(locale, {
-    timeZone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(new Date(iso));
+  return new Intl.DateTimeFormat(locale, { timeZone, ...CLOCK }).format(new Date(iso));
 }
 
-/** "Sat 4 Oct, 06:00" for an instant, in a time zone. */
+/** "Sun 4 Oct, 6:00 am" for an instant, in a time zone. */
 export function formatDateTime(iso: string, locale: string, timeZone: string): string {
   return new Intl.DateTimeFormat(locale, {
     timeZone,
     weekday: 'short',
     day: 'numeric',
     month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
+    ...CLOCK,
   }).format(new Date(iso));
+}
+
+/** "8:00 am" for minutes from midnight (0–1439), as weekly hours are stored. */
+export function formatMinutes(minutes: number, locale: string): string {
+  return new Intl.DateTimeFormat(locale, { timeZone: 'UTC', ...CLOCK }).format(
+    new Date(Date.UTC(1970, 0, 1, 0, minutes)),
+  );
 }
 
 /** 150 → "2 h 30 min" style parts, for messages to word. */

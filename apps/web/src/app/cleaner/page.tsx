@@ -2,21 +2,15 @@
 
 import Link from 'next/link';
 import { JobCard } from '@/components/JobCard';
+import { StepDone } from '@/components/SetupHeader';
 import { Alert, Card, Loading, PageTitle } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useFormat } from '@/lib/format';
 import { groupJobs } from '@/lib/jobs';
-import { onboardingOf, type StepId, type StepState } from '@/lib/onboarding';
+import { STEP_LINKS, onboardingOf, type StepState } from '@/lib/onboarding';
 import { useResource } from '@/lib/use-resource';
-
-const STEP_LINKS: Record<StepId, string> = {
-  profile: '/cleaner/profile',
-  documents: '/cleaner/documents',
-  payout: '/cleaner/payout',
-  hours: '/cleaner/schedule',
-};
 
 const STATE_STYLES: Record<StepState, string> = {
   todo: 'bg-amber-100 text-amber-900',
@@ -63,6 +57,7 @@ export default function CleanerDashboard() {
           ? t('cleaner.dashboard.hello', { name: profile.fullName })
           : t('cleaner.dashboard.title')}
       </PageTitle>
+      <StepDone />
 
       {onboarding.bookable ? (
         <Alert tone="success">{t('cleaner.dashboard.bookable')}</Alert>

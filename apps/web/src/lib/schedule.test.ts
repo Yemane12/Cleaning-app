@@ -2,22 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   dayProblem,
   fromWeek,
-  minutesToTime,
   startOfDayIn,
   timeOptions,
   toWeek,
   weekdayName,
   weeklyMinutes,
 } from './schedule';
-
-describe('minutesToTime', () => {
-  it('writes minutes from midnight as a 24-hour time', () => {
-    expect(minutesToTime(0)).toBe('00:00');
-    expect(minutesToTime(540)).toBe('09:00');
-    expect(minutesToTime(1230)).toBe('20:30');
-    expect(minutesToTime(1440)).toBe('24:00');
-  });
-});
 
 describe('timeOptions', () => {
   it('offers half hours: starts up to 23:30, ends from 00:30 to 24:00', () => {

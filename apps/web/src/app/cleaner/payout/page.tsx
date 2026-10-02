@@ -1,14 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { BackLink } from '@/components/BackLink';
-import { Alert, Button, Card, Field, Loading, PageTitle } from '@/components/ui';
+import { SetupHeader } from '@/components/SetupHeader';
+import { Alert, Button, Card, Field, Loading } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { accountNumberProblem, sortBanks } from '@/lib/banks';
 import { useFormat } from '@/lib/format';
 import type { Bank, PayoutAccount } from '@/lib/types';
+import { useNextStep } from '@/lib/use-next-step';
 import { useResource } from '@/lib/use-resource';
 
 /** Where a cleaner's pay goes: a mobile wallet or a bank account, from Chapa's list. */
@@ -28,26 +29,18 @@ export default function PayoutPage() {
   const [banks, account] = loaded.value;
   return (
     <div className="mx-auto max-w-md space-y-6">
-      <BackLink />
-      <PageTitle>{t('cleaner.payout.title')}</PageTitle>
+      <SetupHeader step="payout" title={t('cleaner.payout.title')} />
       <p className="text-stone-600">{t('cleaner.payout.intro')}</p>
-      <PayoutForm banks={banks} account={account} onSaved={loaded.reload} />
+      <PayoutForm banks={banks} account={account} />
     </div>
   );
 }
 
-function PayoutForm({
-  banks,
-  account,
-  onSaved,
-}: {
-  banks: Bank[];
-  account: PayoutAccount;
-  onSaved: () => void;
-}) {
+function PayoutForm({ banks, account }: { banks: Bank[]; account: PayoutAccount }) {
   const { t } = useI18n();
   const format = useFormat();
   const { profile, refreshProfile } = useAuth();
+  const goToNextStep = useNextStep();
   const [bankCode, setBankCode] = useState<number | null>(account.bankCode);
   const [accountNumber, setAccountNumber] = useState('');
   const [accountName, setAccountName] = useState(account.accountName ?? profile?.fullName ?? '');
@@ -82,12 +75,9 @@ function PayoutForm({
         accountName: accountName.trim(),
       });
       await refreshProfile();
-      setAccountNumber('');
-      setMessage({ tone: 'success', text: t('cleaner.payout.saved', { bank: bank.name }) });
-      onSaved();
+      await goToNextStep('payout');
     } catch (failure) {
       setMessage({ tone: 'error', text: format.error(failure) });
-    } finally {
       setBusy(false);
     }
   }

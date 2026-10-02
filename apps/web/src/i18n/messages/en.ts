@@ -232,6 +232,15 @@ export const en = {
   },
   cleaner: {
     back: 'Back to dashboard',
+    setup: {
+      step: 'Step {n} of {total}',
+      done: {
+        profile: 'Your profile is saved.',
+        documents: 'Your documents are uploaded and sent for checking.',
+        payout: 'Your payout account is saved.',
+        hours: 'Your hours are saved.',
+      },
+    },
     dashboard: {
       hello: 'Hello, {name}',
       title: 'Your dashboard',
@@ -274,7 +283,6 @@ export const en = {
       bio: 'About you',
       bioHint:
         'What customers read when choosing a cleaner: your experience, the areas you work in, what you are good at.',
-      saved: 'Your profile is saved.',
     },
     documents: {
       title: 'Identity check',
@@ -338,7 +346,6 @@ export const en = {
       accountName: 'Name on the account',
       accountNameHint: 'Exactly as your bank or wallet has it.',
       save: 'Save',
-      saved: 'Saved. Your next pay goes to {bank}.',
       problems: {
         digits: 'Use digits only, between 6 and 20 of them.',
         length: '{bank} numbers are {length} digits long.',
@@ -352,9 +359,9 @@ export const en = {
       from: 'From',
       until: 'Until',
       addTime: 'Add another time',
+      midnight: 'Midnight',
       remove: 'Remove',
       save: 'Save hours',
-      saved: 'Your hours are saved.',
       total: '{hours} hours a week',
       problems: {
         endBeforeStart: 'The end must be after the start.',

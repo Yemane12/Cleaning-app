@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { BackLink } from '@/components/BackLink';
-import { Alert, Card, Loading, PageTitle, Spinner } from '@/components/ui';
+import { SetupHeader } from '@/components/SetupHeader';
+import { Alert, Card, Loading, Spinner } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -17,6 +17,7 @@ import {
 } from '@/lib/documents';
 import { useFormat } from '@/lib/format';
 import type { KycDocument, KycDocumentType, KycOverview } from '@/lib/types';
+import { useNextStep } from '@/lib/use-next-step';
 import { useResource } from '@/lib/use-resource';
 
 /** Documents cannot change while they are checked, or once they pass. */
@@ -31,6 +32,7 @@ export default function DocumentsPage() {
   const format = useFormat();
   const { refreshProfile } = useAuth();
   const kyc = useResource(() => api.kyc());
+  const goToNextStep = useNextStep();
   const [uploading, setUploading] = useState<KycDocumentType | null>(null);
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
 
@@ -68,6 +70,12 @@ export default function DocumentsPage() {
       });
       await uploadFile(ticket, file);
       await api.kycConfirm(ticket.documentId);
+      // The last document sends the set for review, which the profile shows.
+      await refreshProfile();
+      if ((await api.kyc()).missingDocumentTypes.length === 0) {
+        await goToNextStep('documents');
+        return;
+      }
       setNotice({
         tone: 'success',
         text: t('cleaner.documents.uploaded', {
@@ -75,8 +83,6 @@ export default function DocumentsPage() {
         }),
       });
       kyc.reload();
-      // The last document sends the set for review, which the profile shows.
-      await refreshProfile();
     } catch (failure) {
       setNotice({
         tone: 'error',
@@ -92,8 +98,7 @@ export default function DocumentsPage() {
 
   return (
     <div className="space-y-6">
-      <BackLink />
-      <PageTitle>{t('cleaner.documents.title')}</PageTitle>
+      <SetupHeader step="documents" title={t('cleaner.documents.title')} />
       <p className="text-stone-600">{t('cleaner.documents.intro')}</p>
 
       <Alert
