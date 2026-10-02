@@ -137,9 +137,11 @@ function BookingFlow() {
                 selected={candidate.id === serviceId}
                 onSelect={() => chooseService(candidate)}
               >
-                <span className="block font-semibold">{candidate.name}</span>
-                {candidate.description && (
-                  <span className="block text-stone-600">{candidate.description}</span>
+                <span className="block font-semibold">{format.serviceName(candidate)}</span>
+                {format.serviceDescription(candidate) && (
+                  <span className="block text-stone-600">
+                    {format.serviceDescription(candidate)}
+                  </span>
                 )}
                 <span className="mt-1 block text-stone-700">
                   {t('book.service.from', {
@@ -258,7 +260,10 @@ function BookingFlow() {
           <h2 className="text-lg font-semibold">{t('book.review.title')}</h2>
           <div className="space-y-1 text-stone-800">
             <p className="font-semibold">
-              {t('book.review.summary', { service: service.name, cleaner: cleanerName(cleaner) })}
+              {t('book.review.summary', {
+                service: format.serviceName(service),
+                cleaner: cleanerName(cleaner),
+              })}
             </p>
             <p>
               {t('book.review.when', {

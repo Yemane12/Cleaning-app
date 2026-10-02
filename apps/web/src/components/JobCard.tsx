@@ -19,7 +19,7 @@ export function JobCard({ job }: { job: BookingListItem }) {
       className="block space-y-1 rounded-xl border border-stone-200 bg-white p-4 shadow-sm hover:border-emerald-600"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-semibold text-stone-900">{job.service.name}</span>
+        <span className="font-semibold text-stone-900">{format.serviceName(job.service)}</span>
         <StatusBadge status={job.status} audience="cleaner" />
       </div>
       <p className="text-sm text-stone-700">

@@ -78,7 +78,10 @@ the choice is remembered on that device.
   "8:30 ጥዋት". Neither counts hours from dawn.
 - **Money.** "ETB 1,150.00" in English, "ብር 1,150.00" in Amharic.
 
-Service names, addresses and other text people type are shown as entered.
+Service names and descriptions come from the API in English and, where an
+admin has given them, Amharic (`nameAm`, `descriptionAm`). Where there is no
+Amharic, the English is shown. Addresses, notes and other text people type
+are shown as entered.
 
 To change wording, edit the messages files. Every language must have every
 key English has, and the same `{placeholders}`; the typecheck and

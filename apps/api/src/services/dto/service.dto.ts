@@ -26,6 +26,17 @@ export class CreateServiceDto {
   @MaxLength(1000)
   description?: string;
 
+  /** Amharic name; the app shows `name` where it is empty. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  nameAm?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  descriptionAm?: string;
+
   @IsEnum(ServiceCategory)
   category!: ServiceCategory;
 
@@ -55,6 +66,17 @@ export class UpdateServiceDto {
   @IsString()
   @MaxLength(1000)
   description?: string;
+
+  /** Amharic name; the app shows `name` where it is empty. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  nameAm?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  descriptionAm?: string;
 
   @IsOptional()
   @IsInt()

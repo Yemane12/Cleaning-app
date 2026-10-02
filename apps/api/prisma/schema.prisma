@@ -188,11 +188,14 @@ enum ServiceCategory {
 /// A bookable service. Prices are integer minor units (santim) — money is never
 /// stored as a float, and never as a Decimal we would then do JS arithmetic on.
 model Service {
-  id          String          @id @default(uuid()) @db.Uuid
-  slug        String          @unique
-  name        String
-  description String?
-  category    ServiceCategory
+  id            String          @id @default(uuid()) @db.Uuid
+  slug          String          @unique
+  name          String
+  description   String?
+  /// The name and description in Amharic; the app shows the English where these are empty.
+  nameAm        String?
+  descriptionAm String?
+  category      ServiceCategory
 
   /// Starting duration for a quote; a customer may book longer.
   baseDurationMinutes   Int

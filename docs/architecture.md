@@ -211,6 +211,11 @@ catalogue.
 The quote is **snapshotted onto the booking** at request time. Repricing a
 service later must not silently change work already agreed.
 
+A service can also carry an Amharic name and description (`nameAm`,
+`descriptionAm`), set by an admin like the rest. The web app shows them to
+Amharic readers. Where either is empty, it shows the English instead.
+Bookings include the service's `nameAm` alongside its `name`.
+
 ### Story 2.2 — Availability
 
 Working hours are a local-time concept ("Mondays 09:00–17:00") while bookings

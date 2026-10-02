@@ -53,7 +53,9 @@ function BookingList() {
               className="block rounded-xl border border-stone-200 bg-white p-4 shadow-sm hover:border-emerald-600"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold text-stone-900">{booking.service.name}</span>
+                <span className="font-semibold text-stone-900">
+                  {format.serviceName(booking.service)}
+                </span>
                 <StatusBadge status={booking.status} />
               </div>
               <p className="text-sm text-stone-700">{format.dateTime(booking.scheduledStart)}</p>
