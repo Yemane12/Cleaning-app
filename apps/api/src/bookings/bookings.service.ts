@@ -288,7 +288,7 @@ export class BookingsService {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
       include: {
-        service: { select: { slug: true, name: true, category: true } },
+        service: { select: { slug: true, name: true, nameAm: true, category: true } },
         // Each side sees the other's name — never their contact details.
         cleaner: { select: { fullName: true } },
         customer: { select: { fullName: true } },
@@ -343,7 +343,7 @@ export class BookingsService {
         ],
       },
       include: {
-        service: { select: { slug: true, name: true } },
+        service: { select: { slug: true, name: true, nameAm: true } },
         cleaner: { select: { fullName: true } },
         customer: { select: { fullName: true } },
         // The area is enough for a list; the full address is on the booking.

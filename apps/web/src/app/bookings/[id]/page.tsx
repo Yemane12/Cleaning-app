@@ -88,7 +88,7 @@ function BookingDetail() {
 
       <Card>
         <dl className="grid gap-4 sm:grid-cols-2">
-          <Detail label={t('booking.service')}>{booking.service.name}</Detail>
+          <Detail label={t('booking.service')}>{format.serviceName(booking.service)}</Detail>
           <Detail label={t('booking.cleaner')}>
             {booking.cleaner.fullName ?? t('common.unnamedCleaner')}
           </Detail>

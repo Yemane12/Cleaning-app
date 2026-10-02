@@ -58,7 +58,7 @@ export default function JobPage() {
     <div className="space-y-6">
       <BackLink href="/cleaner/jobs" label={t('jobs.title')} />
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <PageTitle>{booking.service.name}</PageTitle>
+        <PageTitle>{format.serviceName(booking.service)}</PageTitle>
         <StatusBadge status={booking.status} audience="cleaner" />
       </div>
 

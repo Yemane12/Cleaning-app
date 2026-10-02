@@ -121,6 +121,9 @@ export interface Service {
   slug: string;
   name: string;
   description: string | null;
+  /** Amharic, where given; the app shows the English otherwise. */
+  nameAm?: string | null;
+  descriptionAm?: string | null;
   category: string;
   baseDurationMinutes: number;
   basePriceMinor: number;
@@ -212,7 +215,7 @@ export interface BookingListItem {
   durationMinutes: number;
   quotedPriceMinor: number;
   currency: string;
-  service: { slug: string; name: string };
+  service: { slug: string; name: string; nameAm?: string | null };
   cleaner: { fullName: string | null };
   customer: { fullName: string | null };
   /** The area only, in a list. */

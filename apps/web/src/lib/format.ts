@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n/I18nProvider';
 import { ApiError } from './api';
 import type { AuthFailure } from './auth-errors';
 import { formatMoney } from './money';
+import { serviceDescription, serviceName, type ServiceText } from './services';
 import {
   DEFAULT_TIME_ZONE,
   durationParts,
@@ -16,7 +17,7 @@ import {
 
 /** Locale-aware formatting for the current language. */
 export function useFormat() {
-  const { t, intlLocale } = useI18n();
+  const { t, locale, intlLocale } = useI18n();
 
   return useMemo(() => {
     // Date pickers are the browser's, and always Gregorian.
@@ -35,6 +36,9 @@ export function useFormat() {
        * the picker's: in Amharic, 12/09/2027 is "እሑድ፣ መስከረም 1".
        */
       pickedDay: (date: string) => (ownCalendar && date ? formatDay(date, intlLocale) : undefined),
+      /** A service's name and description in the current language. */
+      serviceName: (service: ServiceText) => serviceName(service, locale),
+      serviceDescription: (service: ServiceText) => serviceDescription(service, locale),
       /** Minutes from midnight, e.g. a weekly window's start: "8:00 am". */
       clock: (minutes: number) => formatMinutes(minutes, intlLocale),
       duration: (minutes: number) => {
@@ -64,5 +68,5 @@ export function useFormat() {
         }
       },
     };
-  }, [t, intlLocale]);
+  }, [t, locale, intlLocale]);
 }

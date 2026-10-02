@@ -9,6 +9,8 @@ describe('ServicesService', () => {
     slug: 'standard-clean',
     name: 'Standard clean',
     description: null,
+    nameAm: null,
+    descriptionAm: null,
     category: ServiceCategory.STANDARD_CLEAN,
     baseDurationMinutes: 120,
     basePriceMinor: 4000,

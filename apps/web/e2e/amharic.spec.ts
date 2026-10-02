@@ -41,6 +41,24 @@ test('a phone set to Amharic gets Amharic, and English stays chosen once picked'
   expect(errors).toEqual([]);
 });
 
+test('a customer reads the services and their bookings in Amharic', async ({ page, context }) => {
+  await new FakeBackend().install(context, { signedIn: true });
+  const errors = watchErrors(page);
+
+  await page.goto('/book');
+  const choice = page.getByRole('button', { name: /መደበኛ ጽዳት/ });
+  await expect(choice).toContainText('ኩሽና፣ መታጠቢያ ቤት፣ ወለል');
+  await expect(choice).not.toContainText('Standard clean');
+
+  await page.goto('/bookings');
+  await expect(page.getByRole('link', { name: /መደበኛ ጽዳት/ })).toBeVisible();
+
+  // English readers still get the English name.
+  await page.getByRole('button', { name: /English/ }).click();
+  await expect(page.getByRole('link', { name: /Standard clean/ })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('a cleaner reads jobs on the Ethiopian calendar, the phone clock and in birr', async ({
   page,
   context,
@@ -53,13 +71,14 @@ test('a cleaner reads jobs on the Ethiopian calendar, the phone clock and in bir
   await expect(page.getByRole('heading', { level: 1, name: 'ሥራዎች' })).toBeVisible();
 
   // 10 October 2026, 9:00 in Addis Ababa, is Saturday 30 Meskerem 2019, 9:00 in the morning.
-  const job = page.getByRole('link', { name: /Standard clean/ });
+  const job = page.getByRole('link', { name: /መደበኛ ጽዳት/ });
   await expect(job).toContainText('አዲስ ጥያቄ');
   await expect(job).toContainText(/ቅዳሜ[፣,] መስከረም 30[፣,]? 9:00 ጥዋት/u);
   await expect(job).toContainText('2 ሰዓት 30 ደቂቃ');
   await expect(job).toContainText(/የሚያገኙት ብር\s850\.00/u);
 
   await job.click();
+  await expect(page.getByRole('heading', { level: 1, name: 'መደበኛ ጽዳት' })).toBeVisible();
   await page.getByRole('button', { name: 'ሥራውን ይቀበሉ' }).click();
   await expect(page.getByText('ተቀብለዋል። ደንበኛው እንደሚመጡ ማየት ይችላል።')).toBeVisible();
   expect(backend.jobStatus).toBe('ACCEPTED');
