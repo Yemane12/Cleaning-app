@@ -332,6 +332,7 @@ function TimeOffSection({
           required
           min={today}
           value={from}
+          hint={format.pickedDay(from)}
           onChange={(event) => {
             setFrom(event.target.value);
             if (to < event.target.value) setTo(event.target.value);
@@ -343,6 +344,7 @@ function TimeOffSection({
           required
           min={from}
           value={to}
+          hint={format.pickedDay(to)}
           onChange={(event) => setTo(event.target.value)}
         />
         <div className="sm:col-span-2">

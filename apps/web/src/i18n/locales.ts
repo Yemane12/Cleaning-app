@@ -1,3 +1,4 @@
+import { am } from './messages/am';
 import { en } from './messages/en';
 
 /** A dictionary of the same shape as English, with any text in its leaves. */
@@ -11,19 +12,29 @@ type Leaves<T, Prefix extends string = ''> = {
 export type MessageKey = Leaves<typeof en>;
 
 /**
- * Languages the app can show. Adding Amharic is one entry here plus a
- * messages/am.ts typed `Messages`, e.g.
- *   am: { messages: am, label: 'አማርኛ', intl: 'am-ET' },
+ * Languages the app can show. Another is one entry here plus a messages file
+ * typed `Messages`. Amharic dates use the Ethiopian calendar, as people there
+ * read them; its clock is the 12-hour one phones show, e.g. "8:30 ጥዋት".
  */
 export const locales = {
   en: { messages: en as Messages, label: 'English', intl: 'en-GB' },
+  am: { messages: am, label: 'አማርኛ', intl: 'am-ET-u-ca-ethiopic' },
 } as const;
 
 export type Locale = keyof typeof locales;
 export const defaultLocale: Locale = 'en';
 
 export function isLocale(value: unknown): value is Locale {
-  return typeof value === 'string' && value in locales;
+  return typeof value === 'string' && Object.hasOwn(locales, value);
+}
+
+/** The first of a browser's preferred languages the app speaks, else the default. */
+export function preferredLocale(languages: readonly string[]): Locale {
+  for (const tag of languages) {
+    const language = tag.toLowerCase().split('-')[0];
+    if (isLocale(language)) return language;
+  }
+  return defaultLocale;
 }
 
 /** The string at `key`, with `{name}` placeholders filled from `values`. */

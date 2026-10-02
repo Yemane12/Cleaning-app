@@ -22,8 +22,8 @@ bookable only once both KYC and payout setup are done.
 
 **Web app** (`apps/web`): customers sign up, book a verified cleaner for a
 free slot, pay with Chapa, and see or cancel their bookings. Next.js, in
-English with every string in translation files so Amharic can be added
-without code changes.
+English and Amharic: it starts in the phone's language, and Amharic dates are
+on the Ethiopian calendar.
 
 ## Getting started
 

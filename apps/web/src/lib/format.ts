@@ -18,14 +18,23 @@ import {
 export function useFormat() {
   const { t, intlLocale } = useI18n();
 
-  return useMemo(
-    () => ({
+  return useMemo(() => {
+    // Date pickers are the browser's, and always Gregorian.
+    const ownCalendar =
+      new Intl.DateTimeFormat(intlLocale).resolvedOptions().calendar !== 'gregory';
+
+    return {
       money: (amountMinor: number, currency: string) =>
         formatMoney(amountMinor, currency, intlLocale),
       dateTime: (iso: string, timeZone = DEFAULT_TIME_ZONE) =>
         formatDateTime(iso, intlLocale, timeZone),
       time: (iso: string, timeZone = DEFAULT_TIME_ZONE) => formatTime(iso, intlLocale, timeZone),
       day: (date: string) => formatDay(date, intlLocale),
+      /**
+       * A date picker's day in the language's own calendar, when that isn't
+       * the picker's: in Amharic, 12/09/2027 is "እሑድ፣ መስከረም 1".
+       */
+      pickedDay: (date: string) => (ownCalendar && date ? formatDay(date, intlLocale) : undefined),
       /** Minutes from midnight, e.g. a weekly window's start: "8:00 am". */
       clock: (minutes: number) => formatMinutes(minutes, intlLocale),
       duration: (minutes: number) => {
@@ -54,7 +63,6 @@ export function useFormat() {
             return t(`auth.problems.${problem}`);
         }
       },
-    }),
-    [t, intlLocale],
-  );
+    };
+  }, [t, intlLocale]);
 }

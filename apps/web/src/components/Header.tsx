@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { useI18n } from '@/i18n/I18nProvider';
+import { locales, type Locale } from '@/i18n/locales';
 import { useAuth } from '@/lib/auth';
 
 export function Header() {
-  const { t } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const { state, profile, signOut } = useAuth();
   const signedIn = state.status === 'signedIn';
   const cleaner = profile?.role === 'CLEANER';
@@ -69,6 +70,21 @@ export function Header() {
               </Link>
             )
           )}
+          {(Object.keys(locales) as Locale[])
+            .filter((other) => other !== locale)
+            .map((other) => (
+              // Each language is offered in its own words, for those who can't read this one.
+              <button
+                key={other}
+                type="button"
+                lang={other}
+                onClick={() => setLocale(other)}
+                aria-label={`${t('common.changeLanguage')}: ${locales[other].label}`}
+                className="rounded-full border border-stone-300 px-3 py-1 hover:border-emerald-700 hover:text-emerald-800"
+              >
+                {locales[other].label}
+              </button>
+            ))}
         </div>
       </nav>
     </header>
