@@ -7,6 +7,9 @@ side someone sees.
 
 - **Customers** sign up, book a verified cleaner, pay with Chapa (telebirr,
   CBE Birr, M-Pesa or card), and see or cancel bookings.
+- **The team** (admins) check cleaners' identity documents at `/admin`: view
+  each photo, mark it right or reject it with a reason the cleaner sees, then
+  approve the cleaner or send the check back.
 - **Cleaners** join from `/work` (a customer account becomes a cleaner one),
   then from their dashboard at `/cleaner`: add a profile, upload identity
   documents, add a payout account (mobile wallet or bank), set weekly hours and
@@ -52,6 +55,7 @@ to use a browser already on the machine, set `PLAYWRIGHT_CHROMIUM_PATH`.
 | `src/app/`             | Customer pages: home, sign-in/up, `book`, `payment/return`, `bookings`, `account`   |
 | `src/app/work/`        | Joining as a cleaner                                                                |
 | `src/app/cleaner/`     | Cleaner pages: dashboard, `profile`, `documents`, `payout`, `schedule`, `jobs`      |
+| `src/app/admin/`       | The team's pages: the identity-check queue and each review                          |
 | `src/lib/api.ts`       | Every API call, typed (`src/lib/types.ts`)                                          |
 | `src/lib/auth.tsx`     | Sign-in state; loads the API profile after each sign-in                             |
 | `src/lib/time.ts`      | Dates and times in the cleaner's zone (Addis Ababa)                                 |

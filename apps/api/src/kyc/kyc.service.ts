@@ -166,6 +166,8 @@ export class KycService {
         id: true,
         type: true,
         status: true,
+        // Whether a reviewer can see it inline (a photo) or must open it (a PDF).
+        contentType: true,
         uploadedAt: true,
         reviewedAt: true,
         rejectionReason: true,
@@ -191,6 +193,23 @@ export class KycService {
       allowedContentTypes: Object.keys(ALLOWED_DOCUMENT_MIME_TYPES),
       maxFileSizeBytes: this.config.get('KYC_MAX_FILE_SIZE_BYTES', { infer: true }),
     };
+  }
+
+  /**
+   * A cleaner's submission as a reviewer sees it: the documents and who sent
+   * them, so the face on the ID can be matched to a name and the person can
+   * be contacted about a problem.
+   */
+  async getSubmission(userId: string) {
+    const [status, cleaner] = await Promise.all([
+      this.getStatus(userId),
+      this.prisma.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { id: true, email: true, fullName: true, phone: true },
+      }),
+    ]);
+
+    return { ...status, cleaner };
   }
 
   /**

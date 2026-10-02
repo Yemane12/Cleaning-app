@@ -166,7 +166,7 @@ regulated decision that is not recorded must not take effect.
 | `GET` | `/api/v1/kyc/status` | `CLEANER` |
 | `GET` | `/api/v1/kyc/documents/:id/download-url` | owner or `ADMIN` |
 | `GET` | `/api/v1/kyc/reviews/pending` | `ADMIN` |
-| `GET` | `/api/v1/kyc/reviews/:userId` | `ADMIN` |
+| `GET` | `/api/v1/kyc/reviews/:userId` | `ADMIN` (documents, and the cleaner's name, email and phone) |
 | `PATCH` | `/api/v1/kyc/documents/:id/review` | `ADMIN` |
 | `PATCH` | `/api/v1/kyc/reviews/:userId` | `ADMIN` |
 | `GET` | `/api/v1/services` | any authenticated user |

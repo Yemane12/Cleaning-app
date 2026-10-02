@@ -8,6 +8,11 @@ const CHECKOUT = 'http://checkout.test';
 const STORAGE = 'http://storage.test';
 const TOKEN = 'e2e-token';
 const REQUIRED_DOCUMENTS = ['ID_FRONT', 'ID_BACK', 'SELFIE', 'PROOF_OF_ADDRESS'];
+/** A 1×1 PNG: what storage serves a signed read, so previews really load. */
+const PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
 /** A Supabase session as supabase-js keeps it; a far expiry means no refresh call. */
 function session() {
@@ -38,6 +43,7 @@ interface Window {
 interface KycDocument {
   id: string;
   type: string;
+  contentType?: string;
   status: 'PENDING_UPLOAD' | 'UPLOADED' | 'VERIFIED' | 'REJECTED';
   uploadedAt: string | null;
   reviewedAt: string | null;
@@ -104,7 +110,7 @@ export class FakeBackend {
   resent: Record<string, unknown> | null = null;
 
   // ── The signed-in user ────────────────────────────────────────────────────
-  role: 'CUSTOMER' | 'CLEANER' = 'CUSTOMER';
+  role: 'CUSTOMER' | 'CLEANER' | 'ADMIN' = 'CUSTOMER';
   fullName = 'Test Customer';
 
   // ── A cleaner's own state ─────────────────────────────────────────────────
@@ -119,6 +125,35 @@ export class FakeBackend {
   jobStatus = 'REQUESTED';
   /** The reason sent with a decline or a cleaner's cancellation. */
   endReason: string | null = null;
+
+  // ── An admin's review queue: one cleaner, Hirut, waiting ──────────────────
+  reviewStatus = 'IN_REVIEW';
+  reviewDocuments: KycDocument[] = [
+    ['d-front', 'ID_FRONT', 'image/jpeg'],
+    ['d-back', 'ID_BACK', 'image/png'],
+    ['d-selfie', 'SELFIE', 'image/jpeg'],
+    ['d-address', 'PROOF_OF_ADDRESS', 'application/pdf'],
+  ].map(([id, type, contentType]) => ({
+    id,
+    type,
+    contentType,
+    status: 'UPLOADED' as const,
+    uploadedAt: '2026-10-02T09:00:00.000Z',
+    reviewedAt: null,
+    rejectionReason: null,
+  }));
+  /** Reviews the admin sent: per document, and the decision on the cleaner. */
+  documentReviews: Array<{ id: string; approved: boolean; reason?: string }> = [];
+  decision: { approved: boolean; reason?: string } | null = null;
+  /** Signed read links handed out, by document id. */
+  readLinks: string[] = [];
+
+  /** Signed in as the team. */
+  asAdmin() {
+    this.role = 'ADMIN';
+    this.fullName = 'Admin';
+    return this;
+  }
 
   /** A cleaner with nothing left to set up: verified, payable, with hours. */
   readyCleaner() {
@@ -257,7 +292,78 @@ export class FakeBackend {
       });
       return route.fulfill({ status: 200, headers: CORS });
     }
+    if (request.method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'image/png', body: PIXEL, headers: CORS });
+    }
     return route.fulfill({ status: 405, headers: CORS });
+  }
+
+  /** The admin's side of the API; undefined for anything else. */
+  private adminApi(method: string, path: string, body: Record<string, unknown>) {
+    if (this.role !== 'ADMIN') return undefined;
+
+    if (method === 'GET' && path === '/kyc/reviews/pending') {
+      return this.reviewStatus === 'IN_REVIEW'
+        ? [
+            {
+              userId: 'u2',
+              kycStatus: 'IN_REVIEW',
+              kycSubmittedAt: '2026-10-02T09:00:00.000Z',
+              user: { email: 'hirut@example.com', fullName: 'Hirut Bekele' },
+            },
+          ]
+        : [];
+    }
+    if (method === 'GET' && path === '/kyc/reviews/u2') {
+      return {
+        status: this.reviewStatus,
+        submittedAt: '2026-10-02T09:00:00.000Z',
+        reviewedAt: null,
+        rejectionReason: null,
+        documents: this.reviewDocuments,
+        missingDocumentTypes: [],
+        requiredDocumentTypes: REQUIRED_DOCUMENTS,
+        allowedContentTypes: ['image/jpeg', 'image/png', 'application/pdf'],
+        maxFileSizeBytes: 10 * 1024 * 1024,
+        cleaner: {
+          id: 'u2',
+          email: 'hirut@example.com',
+          fullName: 'Hirut Bekele',
+          phone: '0912345678',
+        },
+      };
+    }
+
+    const read = /^\/kyc\/documents\/([^/]+)\/download-url$/.exec(path);
+    if (method === 'GET' && read) {
+      this.readLinks.push(read[1]);
+      return {
+        url: `${STORAGE}/read/${read[1]}?X-Amz-Signature=e2e`,
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      };
+    }
+
+    const review = /^\/kyc\/documents\/([^/]+)\/review$/.exec(path);
+    if (method === 'PATCH' && review) {
+      const document = this.reviewDocuments.find((doc) => doc.id === review[1])!;
+      const approved = body.approved === true;
+      document.status = approved ? 'VERIFIED' : 'REJECTED';
+      document.rejectionReason = approved ? null : String(body.reason);
+      this.documentReviews.push({
+        id: document.id,
+        approved,
+        ...(approved ? {} : { reason: String(body.reason) }),
+      });
+      return document;
+    }
+
+    if (method === 'PATCH' && path === '/kyc/reviews/u2') {
+      this.decision = body as { approved: boolean; reason?: string };
+      this.reviewStatus = body.approved === true ? 'APPROVED' : 'REJECTED';
+      return { status: this.reviewStatus };
+    }
+
+    return undefined;
   }
 
   /** The cleaner's side of the API; undefined for anything else. */
@@ -458,11 +564,9 @@ export class FakeBackend {
       return json({ message: 'Unauthorized' }, 401);
     }
 
-    const cleanerAnswer = this.cleanerApi(
-      method,
-      path,
-      JSON.parse(request.postData() || '{}') as Record<string, unknown>,
-    );
+    const requestBody = JSON.parse(request.postData() || '{}') as Record<string, unknown>;
+    const cleanerAnswer =
+      this.adminApi(method, path, requestBody) ?? this.cleanerApi(method, path, requestBody);
     if (cleanerAnswer !== undefined) {
       const { status, body } =
         typeof cleanerAnswer === 'object' &&

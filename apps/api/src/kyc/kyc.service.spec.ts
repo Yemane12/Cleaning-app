@@ -46,6 +46,7 @@ describe('KycService', () => {
       deleteMany: jest.Mock;
     };
     auditLog: { create: jest.Mock };
+    user: { findUniqueOrThrow: jest.Mock };
     $transaction: jest.Mock;
   };
   let storage: {
@@ -68,6 +69,7 @@ describe('KycService', () => {
         deleteMany: jest.fn(),
       },
       auditLog: { create: jest.fn() },
+      user: { findUniqueOrThrow: jest.fn() },
       $transaction: jest.fn().mockImplementation((ops: unknown[]) => Promise.resolve(ops)),
     };
 
@@ -123,6 +125,43 @@ describe('KycService', () => {
         expect.arrayContaining(['image/jpeg', 'image/png', 'application/pdf']),
       );
       expect(status.maxFileSizeBytes).toBe(10 * 1024 * 1024);
+    });
+  });
+
+  describe('getSubmission', () => {
+    it('shows a reviewer the documents, their file types, and who sent them', async () => {
+      prisma.cleanerProfile.findUnique.mockResolvedValue({
+        id: 'p1',
+        kycStatus: KycStatus.IN_REVIEW,
+      });
+      prisma.kycDocument.findMany.mockResolvedValue([
+        {
+          id: 'd1',
+          type: KycDocumentType.ID_FRONT,
+          status: KycDocumentStatus.UPLOADED,
+          contentType: 'image/jpeg',
+        },
+      ]);
+      const sender = {
+        id: cleaner.id,
+        email: 'cleaner@example.com',
+        fullName: 'Hirut Bekele',
+        phone: '0912345678',
+      };
+      prisma.user.findUniqueOrThrow.mockResolvedValue(sender);
+
+      const submission = await service.getSubmission(cleaner.id);
+
+      expect(submission.cleaner).toEqual(sender);
+      expect(submission.status).toBe(KycStatus.IN_REVIEW);
+      expect(submission.documents[0]).toMatchObject({ contentType: 'image/jpeg' });
+      // Contact details only; never anything that would let the reviewer act as them.
+      expect(prisma.user.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: cleaner.id },
+        select: { id: true, email: true, fullName: true, phone: true },
+      });
+      // Storage keys stay private, for reviewers too.
+      expect(prisma.kycDocument.findMany.mock.calls[0][0].select).not.toHaveProperty('storageKey');
     });
   });
 

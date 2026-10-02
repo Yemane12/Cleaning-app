@@ -30,6 +30,9 @@ function RoleGate({ role, children }: { role: Role; children: React.ReactNode })
   if (profile.role === role) {
     return <>{children}</>;
   }
+  if (role === 'ADMIN') {
+    return <Alert>{t('roleGate.adminOnly')}</Alert>;
+  }
   if (role === 'CLEANER') {
     return (
       <Alert>

@@ -2,7 +2,7 @@ import type { Role } from './types';
 
 /** Where someone lands after signing in, when no page asked for them. */
 export function homeFor(role: Role | null | undefined): string {
-  return role === 'CLEANER' ? '/cleaner' : '/book';
+  return role === 'CLEANER' ? '/cleaner' : role === 'ADMIN' ? '/admin' : '/book';
 }
 
 /**

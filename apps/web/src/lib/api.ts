@@ -11,6 +11,8 @@ import type {
   CreatedBooking,
   KycDocumentType,
   KycOverview,
+  KycSubmission,
+  PendingReview,
   NewAddress,
   PaymentSummary,
   PayoutAccount,
@@ -158,6 +160,18 @@ export const api = {
     request<TimeOff>('/availability/exceptions', { method: 'POST', body: timeOff }),
   removeTimeOff: (id: string) =>
     request<null>(`/availability/exceptions/${id}`, { method: 'DELETE' }),
+
+  // ── Admins ────────────────────────────────────────────────────────────────
+
+  pendingReviews: () => request<PendingReview[]>('/kyc/reviews/pending'),
+  submission: (userId: string) => request<KycSubmission>(`/kyc/reviews/${userId}`),
+  /** A short-lived signed link to read one document. */
+  documentUrl: (documentId: string) =>
+    request<{ url: string; expiresAt: string }>(`/kyc/documents/${documentId}/download-url`),
+  reviewDocument: (documentId: string, review: { approved: boolean; reason?: string }) =>
+    request<unknown>(`/kyc/documents/${documentId}/review`, { method: 'PATCH', body: review }),
+  reviewCleaner: (userId: string, review: { approved: boolean; reason?: string }) =>
+    request<unknown>(`/kyc/reviews/${userId}`, { method: 'PATCH', body: review }),
 
   accept: (id: string) => request<unknown>(`/bookings/${id}/accept`, { method: 'PATCH' }),
   decline: (id: string, reason?: string) =>
