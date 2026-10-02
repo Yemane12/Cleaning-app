@@ -2,11 +2,10 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { RequireAuth } from '@/components/RequireAuth';
+import { RequireRole } from '@/components/RequireRole';
 import { Alert, Button, Card, Choice, Field, Loading, PageTitle, TextArea } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
 import { useFormat } from '@/lib/format';
 import { DEFAULT_TIME_ZONE, dateIn, upcomingDates } from '@/lib/time';
 import type { Address, Cleaner, Quote, Service, Slot } from '@/lib/types';
@@ -18,9 +17,9 @@ const MAX_DURATION_MINUTES = 600;
 
 export default function BookPage() {
   return (
-    <RequireAuth>
+    <RequireRole role="CUSTOMER">
       <BookingFlow />
-    </RequireAuth>
+    </RequireRole>
   );
 }
 
@@ -33,7 +32,6 @@ interface Catalogue {
 function BookingFlow() {
   const { t } = useI18n();
   const format = useFormat();
-  const { profile } = useAuth();
   const router = useRouter();
 
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
@@ -114,9 +112,6 @@ function BookingFlow() {
     }
   }
 
-  if (profile && profile.role !== 'CUSTOMER') {
-    return <Alert>{t('auth.notCustomer')}</Alert>;
-  }
   if (loadError) {
     return <Alert tone="error">{format.error(loadError)}</Alert>;
   }

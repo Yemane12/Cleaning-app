@@ -2,9 +2,9 @@
 
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { RequireAuth } from '@/components/RequireAuth';
+import { RequireRole } from '@/components/RequireRole';
 import { StatusBadge } from '@/components/StatusBadge';
-import { Alert, Button, Card, Loading, PageTitle, TextArea } from '@/components/ui';
+import { Alert, Button, Card, Detail, Loading, PageTitle, TextArea } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
 import { useFormat } from '@/lib/format';
@@ -15,9 +15,9 @@ const CANCELLABLE: BookingStatus[] = ['PENDING_PAYMENT', 'REQUESTED', 'ACCEPTED'
 
 export default function BookingPage() {
   return (
-    <RequireAuth>
+    <RequireRole role="CUSTOMER">
       <BookingDetail />
-    </RequireAuth>
+    </RequireRole>
   );
 }
 
@@ -181,15 +181,6 @@ function BookingDetail() {
           )}
         </Card>
       )}
-    </div>
-  );
-}
-
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <dt className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</dt>
-      <dd className="mt-1 text-stone-900">{children}</dd>
     </div>
   );
 }

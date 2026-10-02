@@ -14,13 +14,20 @@ const colours: Record<BookingStatus, string> = {
   CANCELLED_BY_CLEANER: 'bg-red-100 text-red-900',
 };
 
-export function StatusBadge({ status }: { status: BookingStatus }) {
+/** A booking's status, worded for whoever is reading: the customer, or the cleaner. */
+export function StatusBadge({
+  status,
+  audience = 'customer',
+}: {
+  status: BookingStatus;
+  audience?: 'customer' | 'cleaner';
+}) {
   const { t } = useI18n();
   return (
     <span
       className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${colours[status]}`}
     >
-      {t(`bookings.status.${status}`)}
+      {t(audience === 'cleaner' ? `jobs.status.${status}` : `bookings.status.${status}`)}
     </span>
   );
 }

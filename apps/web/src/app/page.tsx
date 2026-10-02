@@ -2,9 +2,12 @@
 
 import Link from 'next/link';
 import { useI18n } from '@/i18n/I18nProvider';
+import { useAuth } from '@/lib/auth';
 
 export default function HomePage() {
   const { t } = useI18n();
+  const { profile } = useAuth();
+  const cleaner = profile?.role === 'CLEANER';
   const steps = [t('home.steps.choose'), t('home.steps.time'), t('home.steps.pay')];
 
   return (
@@ -18,10 +21,10 @@ export default function HomePage() {
         </h1>
         <p className="max-w-xl text-lg text-stone-600">{t('home.subtitle')}</p>
         <Link
-          href="/book"
+          href={cleaner ? '/cleaner' : '/book'}
           className="inline-block rounded-lg bg-emerald-700 px-5 py-3 font-semibold text-white hover:bg-emerald-800"
         >
-          {t('home.cta')}
+          {cleaner ? t('home.ctaCleaner') : t('home.cta')}
         </Link>
       </section>
 
@@ -39,6 +42,16 @@ export default function HomePage() {
         </ol>
         <p className="text-sm text-stone-600">{t('home.trust')}</p>
       </section>
+
+      {!cleaner && (
+        <section className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+          <h2 className="text-xl font-semibold text-stone-900">{t('home.work.title')}</h2>
+          <p className="text-stone-700">{t('home.work.body')}</p>
+          <Link href="/work" className="inline-block font-semibold text-emerald-800 underline">
+            {t('home.work.cta')}
+          </Link>
+        </section>
+      )}
     </div>
   );
 }

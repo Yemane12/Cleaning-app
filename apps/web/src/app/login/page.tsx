@@ -10,7 +10,7 @@ import { useI18n } from '@/i18n/I18nProvider';
 import { useAuth } from '@/lib/auth';
 import { linkProblem, type AuthFailure } from '@/lib/auth-errors';
 import { useFormat } from '@/lib/format';
-import { safeNext } from '@/lib/navigation';
+import { homeFor, safeNext } from '@/lib/navigation';
 
 export default function LoginPage() {
   const { t } = useI18n();
@@ -36,7 +36,8 @@ function LoginForm() {
   const format = useFormat();
   const { state, signIn } = useAuth();
   const router = useRouter();
-  const next = safeNext(useSearchParams().get('next'));
+  const requested = useSearchParams().get('next');
+  const next = requested ? safeNext(requested) : null;
   const href = useSyncExternalStore(
     subscribeToAddress,
     () => window.location.href,
@@ -49,11 +50,13 @@ function LoginForm() {
   const [failed, setFailed] = useState<{ failure: AuthFailure; email: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // A page that sent them here comes first; otherwise their own home.
+  const role = state.status === 'signedIn' ? state.profile?.role : undefined;
   useEffect(() => {
     if (state.status === 'signedIn') {
-      router.replace(next);
+      router.replace(next ?? homeFor(role));
     }
-  }, [state.status, router, next]);
+  }, [state.status, role, router, next]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -100,7 +103,7 @@ function LoginForm() {
       <p className="text-center text-sm text-stone-600">
         {t('auth.noAccount')}{' '}
         <Link
-          href={`/signup?next=${encodeURIComponent(next)}`}
+          href={next ? `/signup?next=${encodeURIComponent(next)}` : '/signup'}
           className="font-semibold text-emerald-800"
         >
           {t('nav.signUp')}
