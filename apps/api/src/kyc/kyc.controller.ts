@@ -45,7 +45,7 @@ export class KycController {
   @Roles(UserRole.ADMIN)
   @Get('reviews/:userId')
   getCleanerSubmission(@Param('userId', ParseUUIDPipe) userId: string) {
-    return this.kycService.getStatus(userId);
+    return this.kycService.getSubmission(userId);
   }
 
   @Roles(UserRole.ADMIN)

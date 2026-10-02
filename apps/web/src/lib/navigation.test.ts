@@ -18,9 +18,10 @@ describe('safeNext', () => {
 });
 
 describe('homeFor', () => {
-  it('sends a cleaner to their dashboard and anyone else to booking', () => {
+  it('sends each role to its own home, and anyone unknown to booking', () => {
     expect(homeFor('CLEANER')).toBe('/cleaner');
     expect(homeFor('CUSTOMER')).toBe('/book');
+    expect(homeFor('ADMIN')).toBe('/admin');
     expect(homeFor(undefined)).toBe('/book');
   });
 });

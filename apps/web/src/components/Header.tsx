@@ -9,11 +9,15 @@ export function Header() {
   const { state, profile, signOut } = useAuth();
   const signedIn = state.status === 'signedIn';
   const cleaner = profile?.role === 'CLEANER';
+  const admin = profile?.role === 'ADMIN';
 
   return (
     <header className="border-b border-stone-200 bg-white">
       <nav className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <Link href={cleaner ? '/cleaner' : '/'} className="text-lg font-bold text-emerald-800">
+        <Link
+          href={cleaner ? '/cleaner' : admin ? '/admin' : '/'}
+          className="text-lg font-bold text-emerald-800"
+        >
           {t('app.name')}
         </Link>
         <div className="flex flex-wrap items-center gap-4 text-sm font-medium text-stone-700">
@@ -29,6 +33,10 @@ export function Header() {
                 {t('nav.schedule')}
               </Link>
             </>
+          ) : admin ? (
+            <Link href="/admin" className="hover:text-emerald-800">
+              {t('nav.checks')}
+            </Link>
           ) : (
             <Link href="/book" className="hover:text-emerald-800">
               {t('nav.book')}
@@ -36,7 +44,7 @@ export function Header() {
           )}
           {signedIn ? (
             <>
-              {!cleaner && (
+              {!cleaner && !admin && (
                 <>
                   <Link href="/bookings" className="hover:text-emerald-800">
                     {t('nav.bookings')}

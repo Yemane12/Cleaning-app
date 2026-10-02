@@ -35,6 +35,8 @@ export interface KycDocument {
   id: string;
   type: KycDocumentType;
   status: KycDocumentStatus;
+  /** e.g. image/jpeg or application/pdf. */
+  contentType?: string;
   uploadedAt: string | null;
   reviewedAt: string | null;
   rejectionReason: string | null;
@@ -52,6 +54,19 @@ export interface KycOverview {
   requiredDocumentTypes: KycDocumentType[];
   allowedContentTypes: string[];
   maxFileSizeBytes: number;
+}
+
+/** A cleaner waiting for an identity check, in the admin's queue. */
+export interface PendingReview {
+  userId: string;
+  kycStatus: KycStatus;
+  kycSubmittedAt: string | null;
+  user: { email: string; fullName: string | null };
+}
+
+/** A cleaner's submission as a reviewer sees it: the documents, and who sent them. */
+export interface KycSubmission extends KycOverview {
+  cleaner: { id: string; email: string; fullName: string | null; phone: string | null };
 }
 
 /** Where to send one file: a short-lived signed PUT straight to storage. */
