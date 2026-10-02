@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { useI18n } from '@/i18n/I18nProvider';
 import { ApiError } from './api';
+import type { AuthFailure } from './auth-errors';
 import { formatMoney } from './money';
 import { DEFAULT_TIME_ZONE, durationParts, formatDateTime, formatDay, formatTime } from './time';
 
@@ -32,6 +33,17 @@ export function useFormat() {
           return t('common.errors.generic', { message: error.message });
         }
         return t('common.errors.generic', { message: String(error) });
+      },
+      /** A failed sign-in, sign-up or resend, worded for the user. */
+      authError: ({ problem, message }: AuthFailure) => {
+        switch (problem) {
+          case 'network':
+            return t('common.errors.network');
+          case 'other':
+            return t('common.errors.generic', { message });
+          default:
+            return t(`auth.problems.${problem}`);
+        }
       },
     }),
     [t, intlLocale],

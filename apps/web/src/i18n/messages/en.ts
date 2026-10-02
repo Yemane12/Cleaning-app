@@ -56,12 +56,29 @@ export const en = {
     phone: 'Phone number',
     password: 'Password',
     passwordHint: 'At least 8 characters.',
+    showPassword: 'Show password',
     submitSignIn: 'Sign in',
     submitSignUp: 'Create account',
     noAccount: 'New here?',
     haveAccount: 'Already have an account?',
-    checkEmail: 'Check your email: we sent a link to confirm your address. Then sign in.',
-    invalid: 'Email or password is not right.',
+    checkEmail:
+      'We sent a link to {email}. Open it within an hour to confirm your address, then sign in. Not there? Look in your spam folder.',
+    noEmail: 'No email?',
+    resend: 'Send a new link',
+    resent: 'We sent a new link to {email}. Open it within an hour.',
+    linkExpired:
+      'That link has expired or was already used. Sign in below: if your email still needs confirming, you can get a new link.',
+    linkFailed:
+      'That link did not work. Sign in below: if your email still needs confirming, you can get a new link.',
+    problems: {
+      invalidCredentials: 'Email or password is not right.',
+      emailNotConfirmed:
+        'Your email address is not confirmed yet. Open the link we emailed you, or get a new one.',
+      emailLimit:
+        'We cannot send another email right now: too many were sent in the last hour. Please try again later.',
+      tooManyAttempts: 'Too many attempts. Please wait a few minutes and try again.',
+      emailInvalid: 'That email address does not look right.',
+    },
     notCustomer: 'This app is for customers for now. Sign in with a customer account to book.',
   },
   book: {

@@ -3,6 +3,7 @@
 import type { Session } from '@supabase/supabase-js';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
+import { authFailure, type AuthFailure } from './auth-errors';
 import { isConfigured } from './env';
 import { supabase } from './supabase';
 import type { Profile } from './types';
@@ -22,10 +23,12 @@ interface SignUpInput {
 interface Auth {
   state: AuthState;
   profile: Profile | null;
-  /** Resolves to an error message, or null on success. */
-  signIn: (email: string, password: string) => Promise<string | null>;
+  /** Resolves to what went wrong, or null on success. */
+  signIn: (email: string, password: string) => Promise<AuthFailure | null>;
   /** `confirm: true` when Supabase must first confirm the email address. */
-  signUp: (input: SignUpInput) => Promise<{ error: string | null; confirm: boolean }>;
+  signUp: (input: SignUpInput) => Promise<{ failure: AuthFailure | null; confirm: boolean }>;
+  /** Emails a fresh confirmation link: the old one expires after an hour. */
+  resendConfirmation: (email: string) => Promise<AuthFailure | null>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -90,7 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase().auth.signInWithPassword({ email, password });
-    return error ? error.message : null;
+    return error ? authFailure(error) : null;
   }, []);
 
   const signUp = useCallback(async ({ fullName, email, phone, password }: SignUpInput) => {
@@ -99,10 +102,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password,
       options: {
         data: { full_name: fullName, ...(phone ? { phone } : {}) },
-        emailRedirectTo: `${window.location.origin}/login`,
+        emailRedirectTo: confirmedUrl(),
       },
     });
-    return { error: error ? error.message : null, confirm: !error && !data.session };
+    return { failure: error ? authFailure(error) : null, confirm: !error && !data.session };
+  }, []);
+
+  const resendConfirmation = useCallback(async (email: string) => {
+    const { error } = await supabase().auth.resend({
+      type: 'signup',
+      email,
+      options: { emailRedirectTo: confirmedUrl() },
+    });
+    return error ? authFailure(error) : null;
   }, []);
 
   const signOut = useCallback(async () => {
@@ -121,13 +133,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       profile: state.status === 'signedIn' ? state.profile : null,
       signIn,
       signUp,
+      resendConfirmation,
       signOut,
       refreshProfile,
     }),
-    [state, signIn, signUp, signOut, refreshProfile],
+    [state, signIn, signUp, resendConfirmation, signOut, refreshProfile],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+/** Where a confirmation link lands: signed in there, or told why not. */
+function confirmedUrl(): string {
+  return `${window.location.origin}/login`;
 }
 
 export function useAuth(): Auth {

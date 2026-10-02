@@ -37,16 +37,25 @@ const address = {
   isDefault: true,
 };
 
+/** Lets the app, on another origin, read the fake's answers. */
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-headers': '*',
+  'access-control-allow-methods': '*',
+};
+
 /** A stand-in for the API, Supabase and Chapa, with the state a test needs. */
 export class FakeBackend {
   bookingStatus = 'REQUESTED';
   created: Record<string, unknown> | null = null;
+  /** False: Supabase refuses a password sign-in until the email is confirmed. */
+  emailConfirmed = true;
+  /** What the app asked Supabase to resend, if anything. */
+  resent: Record<string, unknown> | null = null;
 
   async install(context: BrowserContext, { signedIn }: { signedIn: boolean }) {
     await context.route(`${API}/**`, (route) => this.api(route));
-    await context.route(`${SUPABASE}/**`, (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
-    );
+    await context.route(`${SUPABASE}/**`, (route) => this.supabase(route));
     await context.route(`${CHECKOUT}/**`, (route) =>
       route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Chapa checkout</h1>' }),
     );
@@ -105,6 +114,37 @@ export class FakeBackend {
       },
       freeCancellation: true,
     };
+  }
+
+  private supabase(route: Route) {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown, status = 200) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+        headers: CORS,
+      });
+
+    if (request.method() === 'OPTIONS') {
+      return route.fulfill({ status: 204, headers: CORS });
+    }
+    if (request.method() === 'POST' && url.pathname === '/auth/v1/token' && !this.emailConfirmed) {
+      // Supabase's real answer: a 400 like a wrong password, told apart only by the code.
+      return json(
+        { code: 400, error_code: 'email_not_confirmed', msg: 'Email not confirmed' },
+        400,
+      );
+    }
+    if (request.method() === 'POST' && url.pathname === '/auth/v1/resend') {
+      this.resent = {
+        ...JSON.parse(request.postData() ?? '{}'),
+        redirectTo: url.searchParams.get('redirect_to'),
+      };
+      return json({});
+    }
+    return json({});
   }
 
   private api(route: Route) {

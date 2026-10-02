@@ -3,9 +3,13 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
+import { PasswordField } from '@/components/PasswordField';
+import { ResendConfirmation } from '@/components/ResendConfirmation';
 import { Alert, Button, Card, Field, Loading, PageTitle } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { useAuth } from '@/lib/auth';
+import type { AuthFailure } from '@/lib/auth-errors';
+import { useFormat } from '@/lib/format';
 import { safeNext } from '@/lib/navigation';
 
 export default function SignUpPage() {
@@ -19,12 +23,14 @@ export default function SignUpPage() {
 
 function SignUpForm() {
   const { t } = useI18n();
+  const format = useFormat();
   const { state, signUp } = useAuth();
   const router = useRouter();
   const next = safeNext(useSearchParams().get('next'));
   const [form, setForm] = useState({ fullName: '', email: '', phone: '', password: '' });
-  const [error, setError] = useState<string | null>(null);
-  const [checkEmail, setCheckEmail] = useState(false);
+  const [failure, setFailure] = useState<AuthFailure | null>(null);
+  /** The address a confirmation link went to, once one has. */
+  const [sentTo, setSentTo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -38,27 +44,32 @@ function SignUpForm() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    const email = form.email.trim();
     setBusy(true);
-    setError(null);
+    setFailure(null);
     const result = await signUp({
       fullName: form.fullName.trim(),
-      email: form.email.trim(),
+      email,
       phone: form.phone.replace(/[\s-]/g, '') || undefined,
       password: form.password,
     });
     setBusy(false);
-    if (result.error) {
-      setError(result.error);
+    if (result.failure) {
+      setFailure(result.failure);
     } else if (result.confirm) {
-      setCheckEmail(true);
+      setSentTo(email);
     }
   }
 
-  if (checkEmail) {
+  if (sentTo) {
     return (
       <div className="mx-auto max-w-md space-y-6">
         <PageTitle>{t('auth.signUpTitle')}</PageTitle>
-        <Alert tone="success">{t('auth.checkEmail')}</Alert>
+        <Alert tone="success">{t('auth.checkEmail', { email: sentTo })}</Alert>
+        <div className="space-y-2">
+          <p className="text-sm text-stone-600">{t('auth.noEmail')}</p>
+          <ResendConfirmation email={sentTo} />
+        </div>
         <Link
           href={`/login?next=${encodeURIComponent(next)}`}
           className="font-semibold text-emerald-800"
@@ -74,7 +85,7 @@ function SignUpForm() {
       <PageTitle>{t('auth.signUpTitle')}</PageTitle>
       <Card>
         <form onSubmit={submit} className="space-y-4">
-          {error && <Alert tone="error">{error}</Alert>}
+          {failure && <Alert tone="error">{format.authError(failure)}</Alert>}
           <Field
             label={t('auth.fullName')}
             autoComplete="name"
@@ -102,10 +113,9 @@ function SignUpForm() {
             value={form.phone}
             onChange={update('phone')}
           />
-          <Field
+          <PasswordField
             label={t('auth.password')}
             hint={t('auth.passwordHint')}
-            type="password"
             autoComplete="new-password"
             required
             minLength={8}

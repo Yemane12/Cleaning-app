@@ -1,10 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 import { FakeBackend } from './fake-backend';
 
-/** Fails the test on anything the browser reports as an error. */
-function watchErrors(page: Page) {
+/** Fails the test on anything the browser reports as an error, bar what `expected` matches. */
+function watchErrors(page: Page, expected?: RegExp) {
   const errors: string[] = [];
-  page.on('console', (message) => message.type() === 'error' && errors.push(message.text()));
+  page.on(
+    'console',
+    (message) =>
+      message.type() === 'error' && !expected?.test(message.text()) && errors.push(message.text()),
+  );
   page.on('pageerror', (error) => errors.push(error.message));
   return errors;
 }
@@ -19,6 +23,58 @@ test('a visitor sees the offer and must sign in to book', async ({ page, context
   await page.goto('/book');
   await expect(page).toHaveURL(/\/login\?next=%2Fbook$/);
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('an expired link and an unconfirmed email say so, and a new link can be sent', async ({
+  page,
+  context,
+}) => {
+  const backend = new FakeBackend();
+  backend.emailConfirmed = false;
+  await backend.install(context, { signedIn: false });
+  // Chrome logs Supabase's deliberate 400 as a failed resource load.
+  const errors = watchErrors(page, /status of 400/);
+
+  // Where Supabase sends a confirmation link opened after it expired.
+  await page.goto(
+    '/login#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired',
+  );
+  await expect(page.getByText(/That link has expired or was already used/)).toBeVisible();
+
+  await page.getByLabel('Email').fill('new@example.com');
+  await page.getByLabel('Password', { exact: true }).fill('a-long-password');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByText(/Your email address is not confirmed yet/)).toBeVisible();
+  await expect(page.getByText('Email or password is not right.')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Send a new link' }).click();
+  await expect(page.getByText('We sent a new link to new@example.com.')).toBeVisible();
+  expect(backend.resent).toMatchObject({
+    type: 'signup',
+    email: 'new@example.com',
+    redirectTo: expect.stringMatching(/\/login$/),
+  });
+  expect(errors).toEqual([]);
+});
+
+test('a password can be shown while typing it', async ({ page, context }) => {
+  await new FakeBackend().install(context, { signedIn: false });
+  const errors = watchErrors(page);
+
+  await page.goto('/signup');
+  const password = page.getByLabel('Password', { exact: true });
+  const show = page.getByRole('button', { name: 'Show password' });
+  await password.fill('a-long-password');
+  await expect(password).toHaveAttribute('type', 'password');
+
+  await show.click();
+  await expect(password).toHaveAttribute('type', 'text');
+  await expect(password).toHaveValue('a-long-password');
+  await expect(show).toHaveAttribute('aria-pressed', 'true');
+
+  await show.click();
+  await expect(password).toHaveAttribute('type', 'password');
   expect(errors).toEqual([]);
 });
 
