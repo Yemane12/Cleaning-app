@@ -56,6 +56,7 @@ export const en = {
     phone: 'Phone number',
     password: 'Password',
     passwordHint: 'At least 8 characters.',
+    showPassword: 'Show password',
     submitSignIn: 'Sign in',
     submitSignUp: 'Create account',
     noAccount: 'New here?',

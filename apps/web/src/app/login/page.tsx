@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState, useSyncExternalStore } from 'react';
+import { PasswordField } from '@/components/PasswordField';
 import { ResendConfirmation } from '@/components/ResendConfirmation';
 import { Alert, Button, Card, Field, Loading, PageTitle } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
@@ -84,9 +85,8 @@ function LoginForm() {
             value={email}
             onChange={(event) => setEmail(event.target.value)}
           />
-          <Field
+          <PasswordField
             label={t('auth.password')}
-            type="password"
             autoComplete="current-password"
             required
             value={password}

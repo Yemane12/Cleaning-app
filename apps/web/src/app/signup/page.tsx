@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
+import { PasswordField } from '@/components/PasswordField';
 import { ResendConfirmation } from '@/components/ResendConfirmation';
 import { Alert, Button, Card, Field, Loading, PageTitle } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
@@ -112,10 +113,9 @@ function SignUpForm() {
             value={form.phone}
             onChange={update('phone')}
           />
-          <Field
+          <PasswordField
             label={t('auth.password')}
             hint={t('auth.passwordHint')}
-            type="password"
             autoComplete="new-password"
             required
             minLength={8}

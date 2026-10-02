@@ -43,7 +43,7 @@ test('an expired link and an unconfirmed email say so, and a new link can be sen
   await expect(page.getByText(/That link has expired or was already used/)).toBeVisible();
 
   await page.getByLabel('Email').fill('new@example.com');
-  await page.getByLabel('Password').fill('a-long-password');
+  await page.getByLabel('Password', { exact: true }).fill('a-long-password');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByText(/Your email address is not confirmed yet/)).toBeVisible();
   await expect(page.getByText('Email or password is not right.')).toHaveCount(0);
@@ -55,6 +55,26 @@ test('an expired link and an unconfirmed email say so, and a new link can be sen
     email: 'new@example.com',
     redirectTo: expect.stringMatching(/\/login$/),
   });
+  expect(errors).toEqual([]);
+});
+
+test('a password can be shown while typing it', async ({ page, context }) => {
+  await new FakeBackend().install(context, { signedIn: false });
+  const errors = watchErrors(page);
+
+  await page.goto('/signup');
+  const password = page.getByLabel('Password', { exact: true });
+  const show = page.getByRole('button', { name: 'Show password' });
+  await password.fill('a-long-password');
+  await expect(password).toHaveAttribute('type', 'password');
+
+  await show.click();
+  await expect(password).toHaveAttribute('type', 'text');
+  await expect(password).toHaveValue('a-long-password');
+  await expect(show).toHaveAttribute('aria-pressed', 'true');
+
+  await show.click();
+  await expect(password).toHaveAttribute('type', 'password');
   expect(errors).toEqual([]);
 });
 
