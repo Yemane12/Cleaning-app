@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { accountNumberProblem, sortBanks } from './banks';
 import { earningsOf, groupJobs } from './jobs';
-import { onboardingOf, type CleanerSetup } from './onboarding';
+import { nextStepAfter, onboardingOf, type CleanerSetup } from './onboarding';
 import type { Bank, BookingListItem, BookingStatus, PaymentSummary } from './types';
 
 describe('sortBanks', () => {
@@ -118,5 +118,69 @@ describe('onboardingOf', () => {
     expect(states(onboardingOf(ready)).profile).toBe('todo');
     expect(onboardingOf({ ...ready, weeklyWindows: 0 }).bookable).toBe(false);
     expect(onboardingOf({ ...ready, kycStatus: 'IN_REVIEW' }).bookable).toBe(false);
+  });
+});
+
+describe('nextStepAfter', () => {
+  const fresh: CleanerSetup = {
+    fullName: 'Hirut',
+    bio: null,
+    kycStatus: 'NOT_STARTED',
+    payoutsEnabled: false,
+    weeklyWindows: 0,
+  };
+
+  it('walks a new cleaner through the steps in order', () => {
+    const afterProfile = onboardingOf({ ...fresh, bio: 'Ten years in Bole' });
+    expect(nextStepAfter('profile', afterProfile)).toBe('documents');
+    expect(
+      nextStepAfter('documents', onboardingOf({ ...fresh, bio: 'x', kycStatus: 'IN_REVIEW' })),
+    ).toBe('payout');
+    expect(
+      nextStepAfter(
+        'payout',
+        onboardingOf({ ...fresh, bio: 'x', kycStatus: 'IN_REVIEW', payoutsEnabled: true }),
+      ),
+    ).toBe('hours');
+  });
+
+  it('passes over steps already done, or waiting on review', () => {
+    const onlyHoursLeft = onboardingOf({
+      ...fresh,
+      bio: 'x',
+      kycStatus: 'IN_REVIEW',
+      payoutsEnabled: true,
+    });
+    expect(nextStepAfter('profile', onlyHoursLeft)).toBe('hours');
+  });
+
+  it('comes back for an earlier step left undone, and stops when nothing is left', () => {
+    const profileSkipped = onboardingOf({
+      ...fresh,
+      kycStatus: 'APPROVED',
+      payoutsEnabled: true,
+      weeklyWindows: 2,
+    });
+    expect(nextStepAfter('hours', profileSkipped)).toBe('profile');
+
+    const complete = onboardingOf({
+      ...fresh,
+      bio: 'x',
+      kycStatus: 'IN_REVIEW',
+      payoutsEnabled: true,
+      weeklyWindows: 2,
+    });
+    expect(nextStepAfter('hours', complete)).toBeNull();
+  });
+
+  it('sends a cleaner whose documents were rejected back to them', () => {
+    const rejected = onboardingOf({
+      ...fresh,
+      bio: 'x',
+      kycStatus: 'REJECTED',
+      payoutsEnabled: true,
+      weeklyWindows: 2,
+    });
+    expect(nextStepAfter('hours', rejected)).toBe('documents');
   });
 });

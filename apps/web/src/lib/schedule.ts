@@ -19,12 +19,6 @@ export const DEFAULT_WINDOW = { startMinute: 8 * 60, endMinute: 17 * 60 };
 /** Weekdays in the order a week is shown: Monday first. */
 export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
-/** 540 → "09:00"; the end of the day is "24:00". */
-export function minutesToTime(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-}
-
 /** Every half hour of a day, as start times (00:00 … 23:30) or end times (00:30 … 24:00). */
 export function timeOptions(kind: 'start' | 'end'): number[] {
   const first = kind === 'start' ? 0 : STEP_MINUTES;

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, dateIn, formatDay, formatTime, upcomingDates } from './time';
+import {
+  addDays,
+  dateIn,
+  formatDateTime,
+  formatDay,
+  formatMinutes,
+  formatTime,
+  upcomingDates,
+} from './time';
 
 const ADDIS = 'Africa/Addis_Ababa'; // UTC+3, no DST
 
@@ -24,8 +32,17 @@ describe('time', () => {
     ]);
   });
 
-  it('shows a slot’s time in Addis Ababa', () => {
-    expect(formatTime('2026-10-04T03:00:00.000Z', 'en-GB', ADDIS)).toBe('06:00');
+  it('shows a slot’s time in Addis Ababa, on the 12-hour clock', () => {
+    expect(formatTime('2026-10-04T03:00:00.000Z', 'en-GB', ADDIS)).toBe('6:00 am');
+    expect(formatTime('2026-10-04T11:30:00.000Z', 'en-GB', ADDIS)).toBe('2:30 pm');
+    expect(formatDateTime('2026-10-04T03:00:00.000Z', 'en-GB', ADDIS)).toBe('Sun 4 Oct, 6:00 am');
+  });
+
+  it('shows weekly hours on the 12-hour clock', () => {
+    expect(formatMinutes(0, 'en-GB')).toBe('12:00 am');
+    expect(formatMinutes(480, 'en-GB')).toBe('8:00 am');
+    expect(formatMinutes(720, 'en-GB')).toBe('12:00 pm');
+    expect(formatMinutes(1230, 'en-GB')).toBe('8:30 pm');
   });
 
   it('shows a calendar date as itself, whatever the zone', () => {

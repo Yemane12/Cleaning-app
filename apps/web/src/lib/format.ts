@@ -5,7 +5,14 @@ import { useI18n } from '@/i18n/I18nProvider';
 import { ApiError } from './api';
 import type { AuthFailure } from './auth-errors';
 import { formatMoney } from './money';
-import { DEFAULT_TIME_ZONE, durationParts, formatDateTime, formatDay, formatTime } from './time';
+import {
+  DEFAULT_TIME_ZONE,
+  durationParts,
+  formatDateTime,
+  formatDay,
+  formatMinutes,
+  formatTime,
+} from './time';
 
 /** Locale-aware formatting for the current language. */
 export function useFormat() {
@@ -19,6 +26,8 @@ export function useFormat() {
         formatDateTime(iso, intlLocale, timeZone),
       time: (iso: string, timeZone = DEFAULT_TIME_ZONE) => formatTime(iso, intlLocale, timeZone),
       day: (date: string) => formatDay(date, intlLocale),
+      /** Minutes from midnight, e.g. a weekly window's start: "8:00 am". */
+      clock: (minutes: number) => formatMinutes(minutes, intlLocale),
       duration: (minutes: number) => {
         const parts = durationParts(minutes);
         return parts.minutes === 0

@@ -1,13 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { BackLink } from '@/components/BackLink';
-import { Alert, Button, Card, Field, Loading, PageTitle, TextArea } from '@/components/ui';
+import { SetupHeader } from '@/components/SetupHeader';
+import { Alert, Button, Card, Field, Loading, TextArea } from '@/components/ui';
 import { useI18n } from '@/i18n/I18nProvider';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useFormat } from '@/lib/format';
 import type { Profile } from '@/lib/types';
+import { useNextStep } from '@/lib/use-next-step';
 
 /** What customers see when choosing a cleaner: name and a few words. */
 export default function CleanerProfilePage() {
@@ -25,6 +26,7 @@ function ProfileForm({ profile }: { profile: Profile }) {
   const { t } = useI18n();
   const format = useFormat();
   const { refreshProfile } = useAuth();
+  const goToNextStep = useNextStep();
   const [fullName, setFullName] = useState(profile.fullName ?? '');
   const [phone, setPhone] = useState(profile.phone ?? '');
   const [bio, setBio] = useState(profile.cleanerProfile?.bio ?? '');
@@ -42,18 +44,16 @@ function ProfileForm({ profile }: { profile: Profile }) {
       });
       await api.updateCleanerProfile(bio.trim());
       await refreshProfile();
-      setMessage({ tone: 'success', text: t('cleaner.profile.saved') });
+      await goToNextStep('profile');
     } catch (failure) {
       setMessage({ tone: 'error', text: format.error(failure) });
-    } finally {
       setBusy(false);
     }
   }
 
   return (
     <div className="mx-auto max-w-md space-y-6">
-      <BackLink />
-      <PageTitle>{t('cleaner.profile.title')}</PageTitle>
+      <SetupHeader step="profile" title={t('cleaner.profile.title')} />
       <Card>
         <form onSubmit={save} className="space-y-4">
           {message && <Alert tone={message.tone}>{message.text}</Alert>}
