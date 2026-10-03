@@ -12,6 +12,7 @@ const colours: Record<BookingStatus, string> = {
   DECLINED: 'bg-red-100 text-red-900',
   CANCELLED_BY_CUSTOMER: 'bg-stone-200 text-stone-700',
   CANCELLED_BY_CLEANER: 'bg-red-100 text-red-900',
+  EXPIRED: 'bg-stone-200 text-stone-700',
 };
 
 /** A booking's status, worded for whoever is reading: the customer, or the cleaner. */

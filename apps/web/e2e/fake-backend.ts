@@ -475,7 +475,8 @@ export class FakeBackend {
   }
 
   private booking() {
-    const cancelled = this.bookingStatus === 'CANCELLED_BY_CUSTOMER';
+    // Ended before the clean, so the customer's money went back.
+    const cancelled = ['CANCELLED_BY_CUSTOMER', 'EXPIRED'].includes(this.bookingStatus);
     return {
       id: 'b1',
       reference: 'BK-E2E001',

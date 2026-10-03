@@ -132,6 +132,9 @@ serverless adaptation actually changes and why.
      point the webhook at `https://your-app.vercel.app/api/v1/payments/webhook`
      with a long random secret hash, and put the same hash in
      `CHAPA_WEBHOOK_SECRET`.
+   - `CRON_SECRET` (Production) — any long random string. Vercel Cron sends
+     it to the daily job in `vercel.json`, which refunds paid requests whose
+     start came unanswered. Unset, that job refuses to run.
    - Preview deployments run on every PR. If `DATABASE_URL` there points at
      the same Supabase project as production, every PR gets a live function
      writing to production data — either point Preview at a separate

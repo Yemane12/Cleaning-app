@@ -12,7 +12,12 @@ import type { Booking, BookingStatus } from '@/lib/types';
 import { useResource } from '@/lib/use-resource';
 
 /** Ended without the cleaner doing the work. */
-const ENDED_EARLY: BookingStatus[] = ['DECLINED', 'CANCELLED_BY_CUSTOMER', 'CANCELLED_BY_CLEANER'];
+const ENDED_EARLY: BookingStatus[] = [
+  'DECLINED',
+  'CANCELLED_BY_CUSTOMER',
+  'CANCELLED_BY_CLEANER',
+  'EXPIRED',
+];
 
 /** One job, and the next thing the cleaner can do with it. */
 export default function JobPage() {

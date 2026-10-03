@@ -90,6 +90,13 @@ export const envSchema = z
     LATE_CANCELLATION_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(5000),
 
     /**
+     * Vercel Cron sends this as `Authorization: Bearer …` on its scheduled
+     * calls (see vercel.json). Unset, the scheduled endpoints refuse everyone;
+     * the same work still happens whenever bookings are read.
+     */
+    CRON_SECRET: z.string().min(16, 'use at least 16 random characters').optional(),
+
+    /**
      * Comma-separated browser origins allowed to call this API cross-origin,
      * e.g. "https://app.example.com,https://staging.example.com". Empty by
      * default, which means CORS stays off and only same-origin or non-browser
