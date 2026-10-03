@@ -188,6 +188,7 @@ export const am: Messages = {
       COMPLETED: 'ተጠናቋል',
       CANCELLED_BY_CUSTOMER: 'በእርስዎ ተሰርዟል',
       CANCELLED_BY_CLEANER: 'በባለሙያው ተሰርዟል',
+      EXPIRED: 'ባለሙያው ምላሽ አልሰጡም',
     },
   },
   booking: {
@@ -440,6 +441,7 @@ export const am: Messages = {
       COMPLETED: 'ተጠናቋል',
       CANCELLED_BY_CUSTOMER: 'በደንበኛው ተሰርዟል',
       CANCELLED_BY_CLEANER: 'በእርስዎ ተሰርዟል',
+      EXPIRED: 'በጊዜው ምላሽ አልተሰጠም',
     },
   },
   job: {

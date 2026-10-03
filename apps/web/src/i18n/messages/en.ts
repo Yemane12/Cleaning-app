@@ -195,6 +195,7 @@ export const en = {
       COMPLETED: 'Completed',
       CANCELLED_BY_CUSTOMER: 'Cancelled by you',
       CANCELLED_BY_CLEANER: 'Cancelled by the cleaner',
+      EXPIRED: 'No answer from the cleaner',
     },
   },
   booking: {
@@ -450,6 +451,7 @@ export const en = {
       COMPLETED: 'Done',
       CANCELLED_BY_CUSTOMER: 'Cancelled by the customer',
       CANCELLED_BY_CLEANER: 'Cancelled by you',
+      EXPIRED: 'Not answered in time',
     },
   },
   job: {

@@ -240,6 +240,7 @@ discovery rather than only at booking.
 REQUESTED ──accept──▶ ACCEPTED ──start──▶ IN_PROGRESS ──complete──▶ COMPLETED
     │                    │                     │
     ├──decline──▶ DECLINED                     │
+    ├──start passes──▶ EXPIRED                 │
     └──cancel───▶ CANCELLED_BY_{CUSTOMER,CLEANER} ◀──cancel──┘
 ```
 
@@ -258,6 +259,30 @@ occupies it.
 
 **A REQUESTED booking does not reserve the slot.** Several customers may request
 the same time; whoever the cleaner accepts first gets it.
+
+#### Requests that can no longer happen
+
+A paid request that can no longer happen is ended by the system (no actor on
+its event) and refunded in full. Nobody has to decline it first:
+
+- **The cleaner accepts another booking at that time.** Accepting declines
+  every other `REQUESTED` booking of theirs that overlaps it. The audit event
+  reads "The cleaner accepted another booking at this time".
+- **Its start comes unanswered.** It moves to `EXPIRED`, "Not answered before
+  the start time". A cleaner cannot accept a booking in the past anyway.
+- **The payment lands too late.** Chapa can confirm a payment after the start,
+  or after the cleaner has taken another booking at that time. The request
+  then ends as soon as it reaches `REQUESTED`.
+
+Expiry runs whenever bookings are read, within the reader's own bookings, so
+neither side sees a request that cannot happen. It also runs once a day for
+the ones nobody opens: Vercel Cron calls `GET /api/v1/cron/expire-requests`
+with `Authorization: Bearer $CRON_SECRET` (see `vercel.json`). Each run ends at
+most 20, oldest first, to stay inside the function's time limit.
+
+None of this can fail the request that noticed it. A request that loses a race
+to someone else's change is left alone. Any other failure is logged, and the
+request stays as it was for the next run.
 
 #### Why the overlap rule lives in the database
 
@@ -350,6 +375,8 @@ still seen — a cancelled payment can still become paid — and refunded in ful
 | --- | --- |
 | Customer abandons an unpaid booking | Nothing to return; the checkout lapses |
 | Cleaner declines | Full refund |
+| Cleaner accepts another booking at that time | Full refund, at once |
+| Start passes with no answer (`EXPIRED`) | Full refund |
 | Cleaner cancels (any time), or customer cancels more than 24 h ahead | Full refund |
 | Customer cancels within 24 h of the start | Refund minus `LATE_CANCELLATION_FEE_BPS` (50%); the fee goes to the cleaner, less the platform's share |
 
@@ -519,10 +546,13 @@ not merely that the TypeScript compiles.
 
 Deliberately out of scope so far, and the most likely next steps:
 
-- **Sweeping stale bookings.** An abandoned `PENDING_PAYMENT` booking stays
-  that way, and a paid `REQUESTED` booking the cleaner never answers holds the
-  customer's money until they cancel (which refunds them in full). Both need a
-  scheduled job — expire and refund; neither blocks a slot meanwhile.
+- **Sweeping abandoned checkouts.** An unpaid `PENDING_PAYMENT` booking stays
+  that way until the customer cancels it. It holds no money and blocks no
+  slot. (Paid requests that can no longer happen are already refunded: see
+  [Story 2.3](#requests-that-can-no-longer-happen).)
+- **Accepted jobs never finished.** An `ACCEPTED` booking whose cleaner never
+  starts or completes it keeps the customer's money until someone cancels it.
+  Whether the cleaner came is a dispute for a person, not a timer.
 - **A second checkout for one booking.** If a checkout fails, the customer
   cancels and books again; there is no "try paying again" on the same booking.
 - **Admin refunds, disputes and receipts.** Refunds happen only through

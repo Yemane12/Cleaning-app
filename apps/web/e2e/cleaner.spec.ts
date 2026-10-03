@@ -214,6 +214,23 @@ test('a cleaner declines a request, saying why', async ({ page, context }) => {
   expect(backend.endReason).toBe('I am away that day');
 });
 
+test('a request left unanswered past its start moves to past jobs, with nothing to do', async ({
+  page,
+  context,
+}) => {
+  const backend = new FakeBackend().readyCleaner();
+  backend.jobStatus = 'EXPIRED';
+  await backend.install(context, { signedIn: true });
+
+  await page.goto('/cleaner/jobs');
+  const job = page.getByRole('link', { name: /Standard clean/ });
+  await expect(job).toContainText('Not answered in time');
+  await job.click();
+
+  await expect(page.getByText('Nothing to pay for this job.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Accept job' })).toHaveCount(0);
+});
+
 test('signing in takes a cleaner to their dashboard', async ({ page, context }) => {
   const backend = new FakeBackend().readyCleaner();
   await backend.install(context, { signedIn: false });

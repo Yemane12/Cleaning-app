@@ -10,10 +10,13 @@ import { BookingStatus } from '@prisma/client';
  *   PENDING_PAYMENT ──paid──▶ REQUESTED ──accept──▶ ACCEPTED ──start──▶ IN_PROGRESS ──complete──▶ COMPLETED
  *        │                       │                     │                   │
  *        │                       ├──decline──▶ DECLINED                    │
+ *        │                       ├──start passes──▶ EXPIRED                │
  *        └──cancel (customer)────┴──cancel──▶ CANCELLED_BY_{CUSTOMER,CLEANER} ◀──cancel──┘
  *
  * PENDING_PAYMENT → REQUESTED is made by the system, once Chapa confirms the
- * payment; no endpoint requests it.
+ * payment; no endpoint requests it. So is REQUESTED → EXPIRED, when the start
+ * comes unanswered, and REQUESTED → DECLINED when the cleaner accepts another
+ * booking at the same time.
  */
 export const BOOKING_TRANSITIONS: Readonly<Record<BookingStatus, readonly BookingStatus[]>> =
   Object.freeze({
@@ -22,6 +25,7 @@ export const BOOKING_TRANSITIONS: Readonly<Record<BookingStatus, readonly Bookin
     [BookingStatus.REQUESTED]: [
       BookingStatus.ACCEPTED,
       BookingStatus.DECLINED,
+      BookingStatus.EXPIRED,
       BookingStatus.CANCELLED_BY_CUSTOMER,
       BookingStatus.CANCELLED_BY_CLEANER,
     ],
@@ -36,6 +40,7 @@ export const BOOKING_TRANSITIONS: Readonly<Record<BookingStatus, readonly Bookin
     [BookingStatus.COMPLETED]: [],
     [BookingStatus.CANCELLED_BY_CUSTOMER]: [],
     [BookingStatus.CANCELLED_BY_CLEANER]: [],
+    [BookingStatus.EXPIRED]: [],
   });
 
 export function canTransition(from: BookingStatus, to: BookingStatus): boolean {

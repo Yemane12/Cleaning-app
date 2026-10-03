@@ -35,6 +35,7 @@ describe('booking state machine', () => {
       BookingStatus.DECLINED,
       BookingStatus.CANCELLED_BY_CUSTOMER,
       BookingStatus.CANCELLED_BY_CLEANER,
+      BookingStatus.EXPIRED,
     ]) {
       expect(isTerminal(status)).toBe(true);
       expect(ALL.filter((to) => canTransition(status, to))).toEqual([]);
@@ -59,6 +60,13 @@ describe('booking state machine', () => {
   it('only allows decline while still unanswered', () => {
     expect(canTransition(BookingStatus.REQUESTED, BookingStatus.DECLINED)).toBe(true);
     expect(canTransition(BookingStatus.ACCEPTED, BookingStatus.DECLINED)).toBe(false);
+  });
+
+  // Only a paid request nobody answered can expire; anything accepted is the cleaner's to finish.
+  it('expires only an unanswered request', () => {
+    expect(canTransition(BookingStatus.REQUESTED, BookingStatus.EXPIRED)).toBe(true);
+    expect(canTransition(BookingStatus.PENDING_PAYMENT, BookingStatus.EXPIRED)).toBe(false);
+    expect(canTransition(BookingStatus.ACCEPTED, BookingStatus.EXPIRED)).toBe(false);
   });
 
   it('never allows a self-transition', () => {

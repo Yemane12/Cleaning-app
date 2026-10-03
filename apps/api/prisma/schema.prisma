@@ -290,6 +290,8 @@ enum BookingStatus {
   COMPLETED
   CANCELLED_BY_CUSTOMER
   CANCELLED_BY_CLEANER
+  /// Paid, but its start came before the cleaner answered. Refunded in full.
+  EXPIRED
 }
 
 model Booking {

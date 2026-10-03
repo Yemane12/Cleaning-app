@@ -25,6 +25,7 @@ import { PaymentsService, PaymentSummary } from '../payments/payments.service';
 import { settleCancelled, settleCompleted } from '../payments/payment-math';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { addMinutes } from '../common/time.util';
+import { messageOf } from '../payments/chapa-errors';
 import { BLOCKING_STATUSES, canTransition, isTerminal } from './booking-state';
 import {
   CancelBookingDto,
@@ -38,6 +39,16 @@ const EXCLUSION_VIOLATION = '23P01';
 
 /** A customer cancelling inside this window is outside the free-cancellation policy. */
 export const FREE_CANCELLATION_HOURS = 24;
+
+/** How many unanswered requests one sweep ends, to stay well inside a function's time limit. */
+export const EXPIRY_BATCH = 20;
+
+/** Why the system ended a paid request that can no longer happen; kept on its audit event. */
+const ENDED_BY_SYSTEM = {
+  unanswered: 'Not answered before the start time',
+  paidLate: 'Paid after the start time',
+  slotTaken: 'The cleaner accepted another booking at this time',
+};
 
 type MoneyStep = (tx: Prisma.TransactionClient) => Promise<unknown>;
 
@@ -182,9 +193,15 @@ export class BookingsService {
       throw new ConflictException('The customer has not paid for this booking');
     }
 
-    return this.transition(booking, BookingStatus.ACCEPTED, cleaner.id, {
+    const accepted = await this.transition(booking, BookingStatus.ACCEPTED, cleaner.id, {
       acceptedAt: new Date(),
     });
+
+    // Other paid requests for this time can no longer happen: refund them now
+    // rather than leave the customers' money waiting on a decline.
+    await this.declineClashes(accepted);
+
+    return accepted;
   }
 
   async decline(
@@ -285,6 +302,8 @@ export class BookingsService {
   }
 
   async findOne(actor: AuthenticatedUser, bookingId: string) {
+    await this.expireUnanswered({ id: bookingId });
+
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -325,6 +344,9 @@ export class BookingsService {
           ? // An unpaid request is not yet the cleaner's business.
             { cleanerId: actor.id, status: { not: BookingStatus.PENDING_PAYMENT } }
           : { customerId: actor.id };
+
+    // Neither side should see a request that can no longer happen.
+    await this.expireUnanswered(scope);
 
     const bookings = await this.prisma.booking.findMany({
       where: {
@@ -443,6 +465,7 @@ export class BookingsService {
 
     if (booking.status === BookingStatus.PENDING_PAYMENT) {
       await this.systemTransition(booking, BookingStatus.REQUESTED, 'Payment received');
+      await this.endIfTooLate(booking.id);
       return;
     }
 
@@ -469,7 +492,7 @@ export class BookingsService {
   private async endUncompleted(
     booking: Booking,
     to: BookingStatus,
-    actorId: string,
+    actorId: string | null,
     data: Prisma.BookingUpdateInput,
     reason: string | undefined,
     { chargeable }: { chargeable: boolean },
@@ -500,6 +523,102 @@ export class BookingsService {
     }
 
     return updated;
+  }
+
+  /**
+   * Ends paid requests whose start has come without an answer, refunding each
+   * in full. Runs on a schedule and whenever bookings are read, within `scope`,
+   * so nobody waits on money for a clean that cannot happen. Returns how many
+   * it ended.
+   */
+  async expireUnanswered(scope: Prisma.BookingWhereInput = {}): Promise<number> {
+    const stale = await this.prisma.booking.findMany({
+      where: {
+        AND: [scope, { status: BookingStatus.REQUESTED, scheduledStart: { lte: new Date() } }],
+      },
+      orderBy: { scheduledStart: 'asc' },
+      take: EXPIRY_BATCH,
+    });
+
+    let ended = 0;
+    for (const booking of stale) {
+      if (await this.endBySystem(booking, BookingStatus.EXPIRED, {}, ENDED_BY_SYSTEM.unanswered)) {
+        ended += 1;
+      }
+    }
+    return ended;
+  }
+
+  /** Declines, with a full refund, the other paid requests for an accepted booking's time. */
+  private async declineClashes(accepted: Booking): Promise<void> {
+    const clashes = await this.prisma.booking.findMany({
+      where: {
+        id: { not: accepted.id },
+        cleanerId: accepted.cleanerId,
+        status: BookingStatus.REQUESTED,
+        scheduledStart: { lt: accepted.scheduledEnd },
+        scheduledEnd: { gt: accepted.scheduledStart },
+      },
+    });
+
+    for (const clash of clashes) {
+      await this.endBySystem(
+        clash,
+        BookingStatus.DECLINED,
+        { declinedAt: new Date() },
+        ENDED_BY_SYSTEM.slotTaken,
+      );
+    }
+  }
+
+  /**
+   * A payment can land after its booking stopped being possible: past the
+   * start, or once the cleaner accepted someone else for that time. Such a
+   * request ends at once, refunded, instead of waiting for an answer.
+   */
+  private async endIfTooLate(bookingId: string): Promise<void> {
+    const booking = await this.prisma.booking.findUnique({ where: { id: bookingId } });
+    if (booking?.status !== BookingStatus.REQUESTED) {
+      return;
+    }
+
+    if (booking.scheduledStart.getTime() <= Date.now()) {
+      await this.endBySystem(booking, BookingStatus.EXPIRED, {}, ENDED_BY_SYSTEM.paidLate);
+    } else if (
+      await this.hasBlockingBooking(booking.cleanerId, booking.scheduledStart, booking.scheduledEnd)
+    ) {
+      await this.endBySystem(
+        booking,
+        BookingStatus.DECLINED,
+        { declinedAt: new Date() },
+        ENDED_BY_SYSTEM.slotTaken,
+      );
+    }
+  }
+
+  /**
+   * Ends a request on nobody's say-so but the clock or the calendar, with a
+   * full refund. Never fails the call that noticed it: losing a race to
+   * someone else's change is fine, and any other failure leaves the request
+   * as it was for the next sweep. Returns whether it ended the request.
+   */
+  private async endBySystem(
+    booking: Booking,
+    to: BookingStatus,
+    data: Prisma.BookingUpdateInput,
+    reason: string,
+  ): Promise<boolean> {
+    try {
+      await this.endUncompleted(booking, to, null, data, reason, { chargeable: false });
+      return true;
+    } catch (error) {
+      if (!(error instanceof ConflictException)) {
+        this.logger.error(
+          `Could not end booking ${booking.reference} as ${to}: ${messageOf(error)}`,
+        );
+      }
+      return false;
+    }
   }
 
   /**

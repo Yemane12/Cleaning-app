@@ -77,6 +77,7 @@ describe('translations', () => {
       'COMPLETED',
       'CANCELLED_BY_CUSTOMER',
       'CANCELLED_BY_CLEANER',
+      'EXPIRED',
     ];
     expect(Object.keys(en.bookings.status).sort()).toEqual([...statuses].sort());
   });

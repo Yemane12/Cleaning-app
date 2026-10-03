@@ -139,3 +139,20 @@ test('a customer books, pays with Chapa, and cancels for a full refund', async (
   expect(overflow).toBe(false);
   expect(errors).toEqual([]);
 });
+
+test('a request the cleaner never answered shows as refunded, and cannot be cancelled', async ({
+  page,
+  context,
+}) => {
+  const backend = new FakeBackend();
+  backend.bookingStatus = 'EXPIRED';
+  await backend.install(context, { signedIn: true });
+
+  await page.goto('/bookings');
+  await expect(page.getByText('No answer from the cleaner')).toBeVisible();
+
+  await page.goto('/bookings/b1');
+  await expect(page.getByText('No answer from the cleaner')).toBeVisible();
+  await expect(page.getByText('Refunded ETB 1,150.00')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Cancel booking' })).toHaveCount(0);
+});

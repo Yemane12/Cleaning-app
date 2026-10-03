@@ -38,6 +38,7 @@ describe('BookingsService', () => {
 
   const FUTURE = new Date(Date.now() + 7 * 24 * 3600_000);
   const futureIso = FUTURE.toISOString();
+  const PAST = new Date(Date.now() - 3600_000);
   /** Inside the 24-hour free-cancellation window. */
   const SOON = new Date(Date.now() + 3 * 3600_000);
 
@@ -132,6 +133,10 @@ describe('BookingsService', () => {
     jest.Mock
   >;
   let bookings: BookingsService;
+
+  /** The query a list reads bookings with, as opposed to the sweep it runs first. */
+  const listing = () =>
+    prisma.booking.findMany.mock.calls.map(([query]) => query).find((query) => query.include);
 
   beforeEach(() => {
     prisma = {
@@ -683,6 +688,148 @@ describe('BookingsService', () => {
     });
   });
 
+  describe('requests that can no longer happen', () => {
+    /** The status changes written, in order, as [booking id, new status]. */
+    const moves = () =>
+      prisma.booking.update.mock.calls.map(([{ where, data }]) => [where.id, data.status]);
+    const reasons = () => prisma.bookingEvent.create.mock.calls.map(([{ data }]) => data.reason);
+
+    it('refunds the other paid requests for the same time when the cleaner accepts one', async () => {
+      prisma.booking.findUnique.mockResolvedValue(stored());
+      prisma.booking.findMany.mockResolvedValueOnce([
+        stored({ id: 'bk-2', reference: 'BK-BBB222' }),
+      ]);
+      prisma.payment.findUnique.mockImplementation(({ where }) =>
+        Promise.resolve(
+          paymentRow({ id: where.bookingId === 'bk-2' ? 'pay-2' : 'pay-1', ...where }),
+        ),
+      );
+
+      await bookings.accept(cleaner, 'bk-1');
+
+      expect(prisma.booking.findMany).toHaveBeenCalledWith({
+        where: {
+          id: { not: 'bk-1' },
+          cleanerId: cleaner.id,
+          status: BookingStatus.REQUESTED,
+          scheduledStart: { lt: stored().scheduledEnd },
+          scheduledEnd: { gt: FUTURE },
+        },
+      });
+      expect(moves()).toEqual([
+        ['bk-1', BookingStatus.ACCEPTED],
+        ['bk-2', BookingStatus.DECLINED],
+      ]);
+      expect(reasons()[1]).toBe('The cleaner accepted another booking at this time');
+      expect(prisma.bookingEvent.create.mock.calls[1][0].data.actorId).toBeNull();
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'pay-2' }),
+        { refundMinor: 4000, payoutMinor: 0, platformFeeMinor: 0 },
+        prisma,
+      );
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-2');
+    });
+
+    it('still accepts when ending a clashing request fails', async () => {
+      prisma.booking.findUnique.mockResolvedValue(stored());
+      prisma.booking.findMany.mockResolvedValueOnce([stored({ id: 'bk-2' })]);
+      prisma.booking.update
+        .mockImplementationOnce(({ data }) => Promise.resolve(stored({ status: data.status })))
+        .mockRejectedValueOnce(new Error('connection reset'));
+
+      await expect(bookings.accept(cleaner, 'bk-1')).resolves.toEqual(
+        expect.objectContaining({ status: BookingStatus.ACCEPTED }),
+      );
+    });
+
+    it('expires a paid request whose start came unanswered, refunding it in full', async () => {
+      prisma.booking.findMany.mockResolvedValueOnce([stored({ scheduledStart: PAST })]);
+
+      await expect(bookings.expireUnanswered()).resolves.toBe(1);
+
+      expect(moves()).toEqual([['bk-1', BookingStatus.EXPIRED]]);
+      expect(reasons()).toEqual(['Not answered before the start time']);
+      expect(payments.recordSettlement).toHaveBeenCalledWith(
+        expect.anything(),
+        { refundMinor: 4000, payoutMinor: 0, platformFeeMinor: 0 },
+        prisma,
+      );
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-1');
+    });
+
+    it('counts only the requests it ended, not ones that moved on meanwhile', async () => {
+      prisma.booking.findMany.mockResolvedValueOnce([stored({ scheduledStart: PAST })]);
+      prisma.booking.update.mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('gone', { code: 'P2025', clientVersion: 'x' }),
+      );
+
+      await expect(bookings.expireUnanswered()).resolves.toBe(0);
+      expect(payments.sendRefund).not.toHaveBeenCalled();
+    });
+
+    it("looks, before listing, for the reader's own requests whose start has passed", async () => {
+      await bookings.list(customer, { take: 25, skip: 0 });
+
+      const sweep = prisma.booking.findMany.mock.calls[0][0];
+      expect(sweep.where.AND).toEqual([
+        { customerId: customer.id },
+        { status: BookingStatus.REQUESTED, scheduledStart: { lte: expect.any(Date) } },
+      ]);
+      expect(sweep.take).toBe(20);
+    });
+
+    it('looks at a booking when it is opened', async () => {
+      prisma.booking.findUnique.mockResolvedValue(stored());
+
+      await bookings.findOne(customer, 'bk-1');
+
+      expect(prisma.booking.findMany.mock.calls[0][0].where.AND[0]).toEqual({ id: 'bk-1' });
+    });
+
+    it('refunds at once a payment that lands after the start', async () => {
+      prisma.booking.findUnique
+        .mockResolvedValueOnce(
+          stored({ status: BookingStatus.PENDING_PAYMENT, scheduledStart: PAST }),
+        )
+        .mockResolvedValueOnce(stored({ scheduledStart: PAST }));
+
+      await bookings.onPaymentUpdated(paymentRow() as never);
+
+      expect(moves()).toEqual([
+        ['bk-1', BookingStatus.REQUESTED],
+        ['bk-1', BookingStatus.EXPIRED],
+      ]);
+      expect(reasons()).toEqual(['Payment received', 'Paid after the start time']);
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-1');
+    });
+
+    it('refunds at once a payment for a time the cleaner has since given away', async () => {
+      prisma.booking.findUnique
+        .mockResolvedValueOnce(stored({ status: BookingStatus.PENDING_PAYMENT }))
+        .mockResolvedValueOnce(stored());
+      prisma.booking.findFirst.mockResolvedValue({ id: 'bk-accepted' });
+
+      await bookings.onPaymentUpdated(paymentRow() as never);
+
+      expect(moves()).toEqual([
+        ['bk-1', BookingStatus.REQUESTED],
+        ['bk-1', BookingStatus.DECLINED],
+      ]);
+      expect(payments.sendRefund).toHaveBeenCalledWith('pay-1');
+    });
+
+    it('leaves a paid request that can still happen for the cleaner to answer', async () => {
+      prisma.booking.findUnique
+        .mockResolvedValueOnce(stored({ status: BookingStatus.PENDING_PAYMENT }))
+        .mockResolvedValueOnce(stored());
+
+      await bookings.onPaymentUpdated(paymentRow() as never);
+
+      expect(moves()).toEqual([['bk-1', BookingStatus.REQUESTED]]);
+      expect(payments.sendRefund).not.toHaveBeenCalled();
+    });
+  });
+
   describe('visibility of money', () => {
     it("never shows the customer the cleaner's payout", async () => {
       prisma.booking.findUnique.mockResolvedValue(stored());
@@ -717,7 +864,7 @@ describe('BookingsService', () => {
       const detail = prisma.booking.findUnique.mock.calls[0][0].include;
       expect(detail.cleaner).toEqual({ select: { fullName: true } });
       expect(detail.customer).toEqual({ select: { fullName: true } });
-      const list = prisma.booking.findMany.mock.calls[0][0].include;
+      const list = listing().include;
       expect(list.cleaner).toEqual({ select: { fullName: true } });
       expect(list.customer).toEqual({ select: { fullName: true } });
       // A list shows the area only.
@@ -744,7 +891,7 @@ describe('BookingsService', () => {
         skip: 0,
       });
 
-      expect(prisma.booking.findMany.mock.calls[0][0].where.AND).toEqual(
+      expect(listing().where.AND).toEqual(
         expect.arrayContaining([
           { cleanerId: cleaner.id, status: { not: BookingStatus.PENDING_PAYMENT } },
           { status: BookingStatus.PENDING_PAYMENT },

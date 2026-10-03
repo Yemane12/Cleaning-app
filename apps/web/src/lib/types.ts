@@ -177,7 +177,9 @@ export type BookingStatus =
   | 'IN_PROGRESS'
   | 'COMPLETED'
   | 'CANCELLED_BY_CUSTOMER'
-  | 'CANCELLED_BY_CLEANER';
+  | 'CANCELLED_BY_CLEANER'
+  /** Paid, but its start came before the cleaner answered; refunded in full. */
+  | 'EXPIRED';
 
 export type PaymentStatus =
   'REQUIRES_PAYMENT' | 'PAID' | 'CANCELED' | 'PARTIALLY_REFUNDED' | 'REFUNDED';
